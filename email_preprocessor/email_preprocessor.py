@@ -107,8 +107,13 @@ class EmailPreprocessor:
         Returns:
             Text with normalized whitespace
         """
-        # Replace multiple whitespace with single space
+        # Remove special Unicode whitespace characters
+        text = re.sub(
+            r'[\u034f\u2800\u2000-\u200F\u2028-\u202F\u205F-\u206F\u3000\uFEFF]', '', text)
+
+        # Replace multiple whitespace (including newlines and tabs) with single space
         text = re.sub(r'\s+', ' ', text)
+
         # Remove leading/trailing whitespace
         return text.strip()
 
