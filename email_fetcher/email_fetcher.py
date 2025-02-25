@@ -1,0 +1,140 @@
+"""Email Fetcher Module for Mail Agent.
+
+This module handles fetching unprocessed emails from Gmail accounts.
+It supports async operations and provides a standardized output format for LangGraph.
+"""
+
+from datetime import datetime, timedelta
+from typing import List, Dict, Any, Optional
+import asyncio
+from google.oauth2.credentials import Credentials
+from google_auth_oauthlib.flow import InstalledAppFlow
+from google.auth.transport.requests import Request
+from googleapiclient.discovery import build
+import pickle
+import os
+
+
+class EmailFetcher:
+    """Handles fetching emails from Gmail."""
+
+    def __init__(self):
+        self.gmail_services = {}
+        self.processed_tag = "ProcessedByAgent"
+
+    async def setup_gmail(self, credentials_path: str, token_path: str, account_id: str = 'default') -> None:
+        """Setup Gmail API client for a specific account.
+
+        Args:
+            credentials_path: Path to the Gmail API credentials file
+            token_path: Path to save/load the Gmail token
+            account_id: Unique identifier for this Gmail account
+        """
+        SCOPES = ['https://www.googleapis.com/auth/gmail.modify']
+        creds = None
+
+        if os.path.exists(token_path):
+            with open(token_path, 'rb') as token:
+                creds = pickle.load(token)
+
+        if not creds or not creds.valid:
+            if creds and creds.expired and creds.refresh_token:
+                creds.refresh(Request())
+            else:
+                flow = InstalledAppFlow.from_client_secrets_file(
+                    credentials_path, SCOPES)
+                creds = flow.run_local_server(port=0)
+
+            with open(token_path, 'wb') as token:
+                pickle.dump(creds, token)
+
+        self.gmail_services[account_id] = build(
+            'gmail', 'v1', credentials=creds)
+
+    async def fetch_gmail_emails(self, account_id: str = 'default') -> List[Dict[str, Any]]:
+        """Fetch unprocessed emails from a specific Gmail account within the last 24 hours.
+
+        Args:
+            account_id: Identifier for the Gmail account to fetch from
+
+        Returns:
+            List of standardized email objects
+        """
+        if account_id not in self.gmail_services:
+            raise ValueError(
+                f"Gmail service for account {account_id} not initialized. Call setup_gmail() first.")
+
+        gmail_service = self.gmail_services[account_id]
+        yesterday = (datetime.utcnow() - timedelta(days=1)
+                     ).strftime('%Y/%m/%d')
+        query = f"after:{yesterday} -label:{self.processed_tag}"
+
+        try:
+            results = await asyncio.to_thread(
+                gmail_service.users().messages().list(userId='me', q=query).execute
+            )
+
+            messages = results.get('messages', [])
+            emails = []
+
+            for message in messages:
+                msg = await asyncio.to_thread(
+                    gmail_service.users().messages().get(
+                        userId='me', id=message['id'], format='full'
+                    ).execute
+                )
+
+                headers = msg['payload']['headers']
+                email_data = {
+                    'id': msg['id'],
+                    'provider': 'gmail',
+                    'account_id': account_id,
+                    'subject': next(h['value'] for h in headers if h['name'].lower() == 'subject'),
+                    'from': next(h['value'] for h in headers if h['name'].lower() == 'from'),
+                    'date': next(h['value'] for h in headers if h['name'].lower() == 'date'),
+                    'body': self._get_email_body(msg['payload']),
+                    'thread_id': msg['threadId']
+                }
+                emails.append(email_data)
+
+            return emails
+
+        except Exception as e:
+            print(
+                f"Error fetching Gmail emails for account {account_id}: {str(e)}")
+            return []
+
+    def _get_email_body(self, payload: Dict[str, Any]) -> str:
+        """Extract email body from Gmail message payload.
+
+        Args:
+            payload: Gmail message payload
+
+        Returns:
+            Extracted email body text
+        """
+        if 'body' in payload and payload['body'].get('data'):
+            return payload['body']['data']
+
+        if 'parts' in payload:
+            for part in payload['parts']:
+                if part.get('mimeType') == 'text/plain' and part['body'].get('data'):
+                    return part['body']['data']
+
+        return ""
+
+    async def fetch_all_emails(self) -> List[Dict[str, Any]]:
+        """Fetch all unprocessed emails from all configured accounts.
+
+        Returns:
+            List of standardized email objects from all accounts
+        """
+        all_emails = []
+        try:
+            for account_id in self.gmail_services:
+                emails = await self.fetch_gmail_emails(account_id)
+                all_emails.extend(emails)
+            return all_emails
+        except Exception as e:
+            print(f"Error during email fetching: {str(e)}")
+            return []
