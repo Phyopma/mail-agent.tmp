@@ -5,14 +5,14 @@
             "credentials_path": "credentials/gmail_credentials.json",
             "token_path": "credentials/main_token.pickle",
             "email": "phyopyaemaung1@gmail.com",
-            "timezone": "UTC"
+            "timezone": "America/Los_Angeles"
         },
         {
             "account_id": "school",
             "credentials_path": "credentials/gmail_credentials.json",
             "token_path": "credentials/school_token.pickle",
             "email": "ppaung@uci.edu",
-            "timezone": "UTC"
+            "timezone": "America/Los_Angeles"
         }
     ],
     "settings": {

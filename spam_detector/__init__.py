@@ -4,6 +4,6 @@ This module provides functionality for detecting spam emails using LLM-based ana
 """
 
 # from .spam_detector import SpamDetector
-from .spam_detector import UnifiedEmailAnalyzer
+from .spam_detector import UnifiedEmailAnalyzer, ToolAction
 
-__all__ = ['UnifiedEmailAnalyzer']
+__all__ = ['UnifiedEmailAnalyzer', 'ToolAction']

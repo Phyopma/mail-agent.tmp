@@ -21,6 +21,7 @@ from email_preprocessor import EmailPreprocessor
 from spam_detector import UnifiedEmailAnalyzer
 from email_tagger import EmailTagger
 from calendar_agent import CalendarAgent
+from spam_detector import ToolAction
 
 
 async def process_email_pipeline(email_data: Dict[str, Any],
@@ -29,7 +30,7 @@ async def process_email_pipeline(email_data: Dict[str, Any],
                                  calendar_agent: CalendarAgent,
                                  tagger: EmailTagger,
                                  fetcher: EmailFetcher,
-                                 label_ids: Dict[str, str]) -> Dict[str, Any]:
+                                 label_ids: Dict[str, str], timezone) -> Dict[str, Any]:
     """Process a single email through the complete pipeline.
 
     Args:
@@ -63,55 +64,70 @@ async def process_email_pipeline(email_data: Dict[str, Any],
             'subject': email_data['subject'],
             'received_date': email_data['date'],
             'body': preprocessed['cleaned_body']
-        })
+        }, timezone)
 
         if not analysis_result:
             print("Analysis failed")
             return None
 
-        # Handle calendar events and reminders
-        if 'calendar' in analysis_result['required_tools']:
-            print("Creating calendar event...")
-            calendar_event = analysis_result['calendar_event']
-            if calendar_event:
-                event_details = {
-                    'summary': calendar_event.title,
-                    'start': calendar_event.start_time,
-                    'end': calendar_event.end_time
-                }
-                if calendar_event.description:
-                    event_details['description'] = calendar_event.description
-                if calendar_event.attendees:
-                    event_details['attendees'] = calendar_event.attendees
+        # Handle calendar events, reminders, and tasks based on required_tools
+        for tool in analysis_result['required_tools']:
+            if tool == ToolAction.CALENDAR:
+                print("Creating calendar event...")
+                calendar_event = analysis_result.get('calendar_event')
+                if calendar_event:
+                    event_details = {
+                        'summary': calendar_event.title,
+                        'start': calendar_event.start_time,
+                        'end': calendar_event.end_time if calendar_event.end_time else None,
+                        'description': calendar_event.description if hasattr(calendar_event, 'description') else None,
+                        'location': calendar_event.location if hasattr(calendar_event, 'location') else None,
+                        'attendees': calendar_event.attendees if hasattr(calendar_event, 'attendees') else None
+                    }
+                    result = await calendar_agent.create_event(event_details, email_data['account_id'])
+                    if result['status'] == 'success':
+                        print(
+                            f"Calendar event created successfully: {result['html_link']}")
+                    else:
+                        print(
+                            f"Failed to create calendar event: {result['error']}")
 
-                result = await calendar_agent.create_event(event_details)
-                if result['status'] == 'success':
-                    print(
-                        f"Calendar event created successfully: {result['html_link']}")
-                else:
-                    print(
-                        f"Failed to create calendar event: {result['error']}")
+            elif tool == ToolAction.REMINDER:
+                print("Creating reminder...")
+                reminder = analysis_result.get('reminder')
+                if reminder:
+                    result = await calendar_agent.create_reminder(
+                        title=reminder.title,
+                        due_date=reminder.due_date,
+                        priority=reminder.priority if hasattr(
+                            reminder, 'priority') else None,
+                        description=reminder.description if hasattr(
+                            reminder, 'description') else None,
+                        account_id=email_data['account_id']
+                    )
+                    if result['status'] == 'success':
+                        print(
+                            f"Reminder created successfully: {result['html_link']}")
+                    else:
+                        print(f"Failed to create reminder: {result['error']}")
 
-        if 'reminder' in analysis_result['required_tools']:
-            print("Creating reminder...")
-            reminder = analysis_result['reminder']
-            if reminder:
-                event_details = {
-                    'summary': reminder.title,
-                    'start': reminder.due_date,
-                    'reminder_type': 'reminder'
-                }
-                if reminder.priority:
-                    event_details['priority'] = reminder.priority
-                if reminder.description:
-                    event_details['description'] = reminder.description
-
-                result = await calendar_agent.create_event(event_details)
-                if result['status'] == 'success':
-                    print(
-                        f"Reminder created successfully: {result['html_link']}")
-                else:
-                    print(f"Failed to create reminder: {result['error']}")
+            elif tool == ToolAction.TASK:
+                print("Creating task...")
+                task = analysis_result.get('task')
+                if task:
+                    task_details = {
+                        'title': task.title,
+                        'description': task.description if hasattr(task, 'description') else None,
+                        'due_date': task.due_date if hasattr(task, 'due_date') else None,
+                        'priority': task.priority if hasattr(task, 'priority') else None,
+                        'assignees': task.assignees if hasattr(task, 'assignees') else None
+                    }
+                    result = await calendar_agent.create_task(task_details, email_data['account_id'])
+                    if result['status'] == 'success':
+                        print(
+                            f"Task created successfully: {result['self_link']}")
+                    else:
+                        print(f"Failed to create task: {result['error']}")
 
         # Apply tags based on analysis
         print("Applying tags...")
@@ -160,7 +176,7 @@ async def process_email_pipeline(email_data: Dict[str, Any],
         return None
 
 
-async def run_pipeline(accounts_config: List[Dict[str, str]], analyzer_type: str = 'ollama'):
+async def run_pipeline(accounts_config: List[Dict[str, str]], analyzer_type: str = 'ollama', timezone: str = 'America/Los_Angeles'):
     """Run the complete email processing pipeline for multiple accounts.
 
     Args:
@@ -184,7 +200,7 @@ async def run_pipeline(accounts_config: List[Dict[str, str]], analyzer_type: str
         # Setup Gmail clients for all accounts
         print("Setting up Gmail clients...")
         for account in accounts_config:
-            account_id = account.get('id', 'default')
+            account_id = account.get('account_id', 'default')
             await fetcher.setup_gmail(
                 account['credentials_path'],
                 account['token_path'],
@@ -197,7 +213,8 @@ async def run_pipeline(accounts_config: List[Dict[str, str]], analyzer_type: str
                 account['credentials_path'],
                 account['token_path'],
                 account_id,
-                account.get('timezone', 'UTC')
+                # GMT-8 (Pacific Time)
+                account.get('timezone', 'America/Los_Angeles')
             )
 
         # Fetch unprocessed emails from all accounts
@@ -228,7 +245,8 @@ async def run_pipeline(accounts_config: List[Dict[str, str]], analyzer_type: str
                 calendar_agent,
                 tagger,
                 fetcher,
-                fetcher.label_ids[email['account_id']]
+                fetcher.label_ids[email['account_id']],
+                timezone
             )
 
             if result:
@@ -275,7 +293,8 @@ def main():
         return
 
     # Run the pipeline
-    asyncio.run(run_pipeline(accounts_config, analyzer_type=args.analyzer))
+    asyncio.run(run_pipeline(accounts_config,
+                analyzer_type=args.analyzer, timezone='America/Los_Angeles'))
 
 
 if __name__ == '__main__':

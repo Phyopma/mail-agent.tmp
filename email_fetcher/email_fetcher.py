@@ -7,21 +7,17 @@ It supports async operations and provides a standardized output format for LangG
 from datetime import datetime, timedelta
 from typing import List, Dict, Any, Optional
 import asyncio
-from google.oauth2.credentials import Credentials
-from google_auth_oauthlib.flow import InstalledAppFlow
-from google.auth.transport.requests import Request
-from googleapiclient.discovery import build
-import pickle
-import os
+from .google_service_manager import GoogleServiceManager
 
 
 class EmailFetcher:
     """Handles fetching emails from Gmail."""
 
     def __init__(self):
-        self.gmail_services = {}
+        self.service_manager = GoogleServiceManager()
         self.processed_tag = "ProcessedByAgent"
         self.label_ids = {}  # Store label IDs for each account
+        self.gmail_services = {}  # Keep this for backward compatibility
 
     async def setup_gmail(self, credentials_path: str, token_path: str, account_id: str = 'default') -> None:
         """Setup Gmail API client for a specific account.
@@ -31,29 +27,8 @@ class EmailFetcher:
             token_path: Path to save/load the Gmail token
             account_id: Unique identifier for this Gmail account
         """
-        SCOPES = ['https://www.googleapis.com/auth/gmail.modify',
-                  'https://www.googleapis.com/auth/calendar',
-                  'https://www.googleapis.com/auth/calendar.events'
-                  ]
-        creds = None
-
-        if os.path.exists(token_path):
-            with open(token_path, 'rb') as token:
-                creds = pickle.load(token)
-
-        if not creds or not creds.valid:
-            if creds and creds.expired and creds.refresh_token:
-                creds.refresh(Request())
-            else:
-                flow = InstalledAppFlow.from_client_secrets_file(
-                    credentials_path, SCOPES)
-                creds = flow.run_local_server(port=0)
-
-            with open(token_path, 'wb') as token:
-                pickle.dump(creds, token)
-
-        self.gmail_services[account_id] = build(
-            'gmail', 'v1', credentials=creds)
+        services = await self.service_manager.setup_services(credentials_path, token_path, account_id)
+        self.gmail_services[account_id] = services['gmail']
 
         # Create required Gmail labels
         await self._setup_required_labels(account_id)
@@ -64,120 +39,9 @@ class EmailFetcher:
         Args:
             account_id: Identifier for the Gmail account
         """
-        service = self.gmail_services[account_id]
         try:
-            # Get existing labels
-            existing_labels = await asyncio.to_thread(
-                service.users().labels().list(userId='me').execute
-            )
-            existing_label_names = [label['name']
-                                    for label in existing_labels.get('labels', [])]
-
-            # Define required labels with their configurations
-            required_labels = {
-                'ProcessedByAgent': {
-                    'name': 'ProcessedByAgent',
-                    'labelListVisibility': 'labelShow',
-                    'messageListVisibility': 'show'
-                },
-                # Priority labels
-                'Priority/Critical': {
-                    'name': 'Priority/Critical',
-                    'labelListVisibility': 'labelShow',
-                    'messageListVisibility': 'show'
-                },
-                'Priority/Urgent': {
-                    'name': 'Priority/Urgent',
-                    'labelListVisibility': 'labelShow',
-                    'messageListVisibility': 'show'
-                },
-                'Priority/High': {
-                    'name': 'Priority/High',
-                    'labelListVisibility': 'labelShow',
-                    'messageListVisibility': 'show'
-                },
-                'Priority/Normal': {
-                    'name': 'Priority/Normal',
-                    'labelListVisibility': 'labelShow',
-                    'messageListVisibility': 'show'
-                },
-                'Priority/Low': {
-                    'name': 'Priority/Low',
-                    'labelListVisibility': 'labelShow',
-                    'messageListVisibility': 'show'
-                },
-                'Priority/Ignore': {
-                    'name': 'Priority/Ignore',
-                    'labelListVisibility': 'labelShow',
-                    'messageListVisibility': 'show'
-                },
-                # Category labels
-                'Category/Work': {
-                    'name': 'Category/Work',
-                    'labelListVisibility': 'labelShow',
-                    'messageListVisibility': 'show'
-                },
-                'Category/Personal': {
-                    'name': 'Category/Personal',
-                    'labelListVisibility': 'labelShow',
-                    'messageListVisibility': 'show'
-                },
-                'Category/Family': {
-                    'name': 'Category/Family',
-                    'labelListVisibility': 'labelShow',
-                    'messageListVisibility': 'show'
-                },
-                'Category/Social': {
-                    'name': 'Category/Social',
-                    'labelListVisibility': 'labelShow',
-                    'messageListVisibility': 'show'
-                },
-                'Category/Marketing': {
-                    'name': 'Category/Marketing',
-                    'labelListVisibility': 'labelShow',
-                    'messageListVisibility': 'show'
-                },
-                'Category/School': {
-                    'name': 'Category/School',
-                    'labelListVisibility': 'labelShow',
-                    'messageListVisibility': 'show'
-                },
-                'Category/Newsletter': {
-                    'name': 'Category/Newsletter',
-                    'labelListVisibility': 'labelShow',
-                    'messageListVisibility': 'show'
-                },
-                'Category/Shopping': {
-                    'name': 'Category/Shopping',
-                    'labelListVisibility': 'labelShow',
-                    'messageListVisibility': 'show'
-                }
-            }
-
-            # Create missing labels and store all label IDs
-            self.label_ids[account_id] = {}
-            for label_name, label_config in required_labels.items():
-                if label_name not in existing_label_names:
-                    created_label = await asyncio.to_thread(
-                        service.users().labels().create(
-                            userId='me',
-                            body=label_config
-                        ).execute
-                    )
-                    self.label_ids[account_id][label_name] = created_label['id']
-                    print(f"Created '{label_name}' label")
-                else:
-                    # Get ID of existing label
-                    existing_label = next(
-                        label for label in existing_labels.get('labels', [])
-                        if label['name'] == label_name
-                    )
-                    self.label_ids[account_id][label_name] = existing_label['id']
-                    print(f"'{label_name}' label already exists")
-
-            print(
-                f"Stored {len(self.label_ids[account_id])} label IDs for account {account_id}")
-
+            # Use the service manager to setup labels
+            self.label_ids[account_id] = await self.service_manager.setup_gmail_labels(account_id)
         except Exception as e:
             print(f"Error setting up Gmail labels: {str(e)}")
 

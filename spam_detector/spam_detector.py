@@ -145,7 +145,6 @@ class UnifiedEmailAnalyzer:
             )
 
         self.semaphore = asyncio.Semaphore(max_concurrent_requests)
-
         # Optimized system prompt following OpenAI guidelines
         self.system_prompt = """
         You are an expert email analyzer specializing in spam detection, categorization, priority assessment, and tool detection.
@@ -265,7 +264,7 @@ class UnifiedEmailAnalyzer:
           * Read-only updates
           * No action or response expected
 
-        For tool detection, carefully analyze the email content and identify if any of these tools are needed:
+        For tool detection, carefully analyze the email content and identify ALL tools that are needed. Multiple tools can be required for a single email. For example, an email might need both a calendar event and a reminder, or both a task and a calendar event.
 
         1. Calendar Events - Required when the email contains:
            - Meeting invitations or scheduling requests
@@ -297,23 +296,30 @@ class UnifiedEmailAnalyzer:
            - Contains no scheduling or deadline information
            - Is spam or marketing content
 
+        Note: A single email can require multiple tools. Analyze thoroughly and include ALL applicable tools.
+
         For each tool requirement:
         1. First determine if the tool is needed based on the above criteria
         2. If needed, extract all relevant information in the specified format
         3. Provide clear reasoning for why the tool was selected
-        4. Ensure all dates and times are in ISO format
+        4. Ensure all dates and times are in ISO format with respect to the provided timezone
         5. Include all available details in the tool-specific fields
+        6. When handling dates and times:
+           - Convert all relative time expressions (e.g., 'tomorrow', 'next week') to absolute dates
+           - Use the provided timezone for all datetime conversions
+           - Format all datetime fields in ISO format with timezone offset
+           - Consider daylight saving time when applicable
 
         Provide your analysis in a structured format with:
         1. Spam classification (SPAM/NOT_SPAM) - based on comprehensive spam indicators
         2. Email category (WORK/PERSONAL/FAMILY/SOCIAL/MARKETING/SCHOOL/NEWSLETTER/SHOPPING) - based on content and context analysis
         3. Priority level (CRITICAL/URGENT/HIGH/NORMAL/LOW/IGNORE) - based on time sensitivity and impact
-        4. Required tools (calendar, reminder, or none) - based on content analysis
+        4. Required tools (List of calendar, reminder, tasks or none) - based on content analysis
         5. Detailed tool information if needed (calendar_event or reminder fields)
         6. Clear reasoning for all decisions
         """
 
-    async def analyze_email(self, email_data: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    async def analyze_email(self, email_data: Dict[str, Any], timezone: str = "America/Los_Angeles") -> Optional[Dict[str, Any]]:
         """Analyze email using the configured LLM backend.
 
         Args:
@@ -334,7 +340,8 @@ Subject: {email_data.get('subject', '')}
 Received Date: {email_data.get('received_date', '')}
 Body: {email_data.get('body', '')}
 
-Note: Use the received date as reference point for any relative time expressions like 'tomorrow', 'next week', etc."""
+Note: Use the received date as reference point for any relative time expressions like 'tomorrow', 'next week', etc.
+All datetime fields should be in ISO format with {timezone}timezone."""
 
             messages = [
                 (
