@@ -25,20 +25,21 @@ SAMPLE_EMAILS = [
     }
 ]
 
+
 async def test_spam_detection():
     """Test the spam detection module with sample emails."""
     detector = SpamDetector()
-    
+
     print("Testing Spam Detection...\n")
-    
+
     for i, email in enumerate(SAMPLE_EMAILS, 1):
         print(f"\nTesting Email {i}:")
         print(f"From: {email['from']}")
         print(f"Subject: {email['subject']}")
         print("Body: ", email['body'][:100], "...")
-        
+
         result = await detector.detect_spam(email)
-        
+
         if result:
             print("\nResults:")
             print(f"Is Spam: {result['is_spam']}")
@@ -46,7 +47,7 @@ async def test_spam_detection():
             print(f"Reasoning: {result['reasoning']}")
         else:
             print("\nError: Failed to analyze email")
-        
+
         print("\n" + "-"*50)
 
 if __name__ == "__main__":
