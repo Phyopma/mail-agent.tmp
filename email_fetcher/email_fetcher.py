@@ -31,7 +31,10 @@ class EmailFetcher:
             token_path: Path to save/load the Gmail token
             account_id: Unique identifier for this Gmail account
         """
-        SCOPES = ['https://www.googleapis.com/auth/gmail.modify']
+        SCOPES = ['https://www.googleapis.com/auth/gmail.modify',
+                  'https://www.googleapis.com/auth/calendar',
+                  'https://www.googleapis.com/auth/calendar.events'
+                  ]
         creds = None
 
         if os.path.exists(token_path):
@@ -172,7 +175,8 @@ class EmailFetcher:
                     self.label_ids[account_id][label_name] = existing_label['id']
                     print(f"'{label_name}' label already exists")
 
-            print(f"Stored {len(self.label_ids[account_id])} label IDs for account {account_id}")
+            print(
+                f"Stored {len(self.label_ids[account_id])} label IDs for account {account_id}")
 
         except Exception as e:
             print(f"Error setting up Gmail labels: {str(e)}")

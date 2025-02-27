@@ -52,6 +52,42 @@ class Spam(str, Enum):
 #     COMMUNICATION_TOOL = "communication_tool"
 #     FILE_SHARING = "file_sharing"
 
+class CalendarEvent(BaseModel):
+    title: str = Field(description="Title of the calendar event")
+    start_time: str = Field(
+        description="Start time of the event in ISO format")
+    end_time: Optional[str] = Field(
+        description="End time of the event in ISO format")
+    description: Optional[str] = Field(description="Description of the event")
+    attendees: Optional[List[str]] = Field(
+        description="List of attendee email addresses")
+
+
+class Reminder(BaseModel):
+    title: str = Field(description="Title of the reminder")
+    due_date: str = Field(description="Due date in ISO format")
+    priority: str = Field(description="Priority level (high, medium, low)")
+    description: Optional[str] = Field(
+        description="Description of the reminder")
+
+
+class ToolAction(str, Enum):
+    CALENDAR = "calendar"
+    REMINDER = "reminder"
+    TASK = "task"
+    NONE = "none"
+
+
+class Task(BaseModel):
+    title: str = Field(description="Title of the task")
+    due_date: Optional[str] = Field(description="Due date in ISO format")
+    priority: Optional[str] = Field(
+        description="Priority level (high, medium, low)")
+    description: Optional[str] = Field(description="Description of the task")
+    assignees: Optional[List[str]] = Field(
+        description="List of assignee email addresses")
+
+
 class EmailAnalysisResult(BaseModel):
     """Structured output for email analysis following OpenAI guidelines."""
     is_spam: Spam = Field(
@@ -61,10 +97,16 @@ class EmailAnalysisResult(BaseModel):
         description="Determines the primary category (WORK/PERSONAL/FAMILY/SOCIAL/MARKETING/SCHOOL/NEWSLETTER/SHOPPING) based on sender relationship, content context, communication style, and purpose. Analyzes tone, formatting, domain, and specific content indicators unique to each category.")
     priority: EmailPriority = Field(
         description="Assigns priority level (CRITICAL/URGENT/HIGH/NORMAL/LOW/IGNORE) based on time sensitivity, impact, and required action. Considers explicit deadlines, business impact, emergency nature, and whether a response is needed.")
-    # action_items: PyList[EmailAction] = Field(
-    #     description="List of required actions from the email")
-    # suggested_tools: PyList[EmailTool] = Field(
-    #     description="List of relevant tools for the actions")
+    required_tools: List[ToolAction] = Field(
+        description="List of required tools for this email")
+    calendar_event: Optional[CalendarEvent] = Field(
+        description="Calendar event details if needed")
+    reminder: Optional[Reminder] = Field(
+        description="Reminder details if needed")
+    task: Optional[Task] = Field(
+        description="Task details if needed")
+    reasoning: str = Field(
+        description="Reasoning for the tool selection and details")
 
 
 class UnifiedEmailAnalyzer:
@@ -106,7 +148,7 @@ class UnifiedEmailAnalyzer:
 
         # Optimized system prompt following OpenAI guidelines
         self.system_prompt = """
-        You are an expert email analyzer specializing in spam detection, categorization, and priority assessment.
+        You are an expert email analyzer specializing in spam detection, categorization, priority assessment, and tool detection.
         Your task is to analyze emails holistically and provide accurate, structured analysis based on comprehensive criteria.
 
         For spam detection, evaluate these characteristics (multiple indicators suggest higher spam probability):
@@ -223,10 +265,52 @@ class UnifiedEmailAnalyzer:
           * Read-only updates
           * No action or response expected
 
+        For tool detection, carefully analyze the email content and identify if any of these tools are needed:
+
+        1. Calendar Events - Required when the email contains:
+           - Meeting invitations or scheduling requests
+           - Event details with specific date and time
+           - Conference or appointment scheduling
+           - Location information or virtual meeting links
+           - List of attendees or participants
+           If detected, extract and format all relevant details (title, start/end time, description, attendees)
+
+        2. Tasks - Required when the email contains:
+           - Assigned work items or action items
+           - Project tasks with owners
+           - Delegated responsibilities
+           - Work assignments with deadlines
+           - Team collaboration tasks
+           If detected, extract and format all relevant details (title, due date, priority, description, assignees)
+
+        3. Reminders - Required when the email contains:
+           - Personal follow-up requests
+           - Simple to-do items
+           - Important dates to remember
+           - Non-work related deadlines
+           - Individual action items
+           If detected, extract and format all relevant details (title, due date, priority, description)
+
+        4. No Tools - When the email:
+           - Is purely informational
+           - Requires no specific action tracking
+           - Contains no scheduling or deadline information
+           - Is spam or marketing content
+
+        For each tool requirement:
+        1. First determine if the tool is needed based on the above criteria
+        2. If needed, extract all relevant information in the specified format
+        3. Provide clear reasoning for why the tool was selected
+        4. Ensure all dates and times are in ISO format
+        5. Include all available details in the tool-specific fields
+
         Provide your analysis in a structured format with:
         1. Spam classification (SPAM/NOT_SPAM) - based on comprehensive spam indicators
         2. Email category (WORK/PERSONAL/FAMILY/SOCIAL/MARKETING/SCHOOL/NEWSLETTER/SHOPPING) - based on content and context analysis
         3. Priority level (CRITICAL/URGENT/HIGH/NORMAL/LOW/IGNORE) - based on time sensitivity and impact
+        4. Required tools (calendar, reminder, or none) - based on content analysis
+        5. Detailed tool information if needed (calendar_event or reminder fields)
+        6. Clear reasoning for all decisions
         """
 
     async def analyze_email(self, email_data: Dict[str, Any]) -> Optional[Dict[str, Any]]:
@@ -244,7 +328,13 @@ class UnifiedEmailAnalyzer:
                 EmailAnalysisResult)
 
             # Prepare the analysis prompt
-            analysis_prompt = f"""Analyze this email and provide a structured analysis: From: {email_data.get('from', '')}Subject: {email_data.get('subject', '')} Body:{email_data.get('body', '')}"""
+            analysis_prompt = f"""Analyze this email and provide a structured analysis:
+From: {email_data.get('from', '')}
+Subject: {email_data.get('subject', '')}
+Received Date: {email_data.get('received_date', '')}
+Body: {email_data.get('body', '')}
+
+Note: Use the received date as reference point for any relative time expressions like 'tomorrow', 'next week', etc."""
 
             messages = [
                 (
@@ -256,12 +346,13 @@ class UnifiedEmailAnalyzer:
             result = await structured_llm.ainvoke(messages)
 
             return {
-
                 'is_spam': result.is_spam,
-                # 'confidence': result.spam_confidence,
-                # 'reasoning': result.spam_reasoning
                 'category': result.category,
-                'priority': result.priority
+                'priority': result.priority,
+                'required_tools': result.required_tools,
+                'calendar_event': result.calendar_event,
+                'reminder': result.reminder,
+                'reasoning': result.reasoning
             }
 
         except Exception as e:
@@ -284,116 +375,3 @@ class UnifiedEmailAnalyzer:
         tasks = [process_single_email(email_data)
                  for email_data in email_data_list]
         return await asyncio.gather(*tasks)
-
-
-# class SpamDetectionResult(BaseModel):
-#     """Structured output for spam detection results."""
-#     is_spam: bool=Field(
-#         description="Whether the email is classified as spam")
-#     confidence: float=Field(description="Confidence score between 0 and 1")
-#     reasoning: str=Field(description="Explanation for the classification")
-
-
-# class SpamDetector:
-#     """Handles spam detection using local LLM through Ollama."""
-
-#     def __init__(self, model_name: str="llama3.1:8b-instruct-q4_K_M", max_concurrent_requests: int=3):
-#         """Initialize the spam detector.
-
-#         Args:
-#             model_name: Name of the Ollama model to use
-#             max_concurrent_requests: Maximum number of concurrent requests to Ollama
-#         """
-#         self.llm=ChatOpenAI(
-#             base_url="http://localhost:11434/v1",
-#             api_key="not-needed",
-#             temperature=0,
-#             max_tokens=2048,
-#             model_name=model_name
-#         )
-#         self.output_parser=PydanticOutputParser(
-#             pydantic_object=SpamDetectionResult)
-#         self.semaphore=asyncio.Semaphore(max_concurrent_requests)
-
-#         # System prompt for spam detection
-#         self.system_prompt="""
-#         You are an expert email spam detector. Your task is to analyze emails and determine if they are spam.
-#         Consider these characteristics of spam emails:
-#         1. Unsolicited commercial content or marketing materials
-#         2. Suspicious sender addresses (mismatched domains, random characters)
-#         3. Poor grammar, spelling errors, or unusual formatting
-#         4. Urgency or pressure tactics ("Act now!", "Limited time")
-#         5. Requests for sensitive information (passwords, bank details)
-#         6. Too-good-to-be-true offers (prizes, inheritance, investments)
-#         7. Excessive use of capital letters, punctuation, or emojis
-#         8. Generic greetings ("Dear Sir/Madam", "Dear User")
-#         9. Mismatched sender name and email address
-#         10. Links to suspicious or shortened URLs
-#         11. Requests for money transfers or cryptocurrency
-#         12. Impersonation of legitimate organizations
-
-#         Analyze the email holistically and provide your analysis in a structured format with:
-#         - A boolean indicating if it's spam (true/false)
-#         - A confidence score between 0 and 1 (higher = more confident) independent of the boolean
-#         - Clear, brief reasoning explaining your classification based on the above characteristics
-#         """
-
-#         self.prompt_template=PromptTemplate(
-#             template="{system_prompt}\n\nAnalyze this email:\nFrom: {from_address}\nSubject: {subject}\nBody:\n{body}\n\n{format_instructions}",
-#             input_variables=["from_address", "subject", "body"],
-#             partial_variables={
-#                 "system_prompt": self.system_prompt,
-#                 "format_instructions": self.output_parser.get_format_instructions()
-#             }
-#         )
-
-#     async def detect_spam(self, email_data: Dict[str, Any]) -> Optional[Dict[str, Any]]:
-#         """Detect if an email is spam using the local LLM.
-
-#         Args:
-#             email_data: Dictionary containing email information
-
-#         Returns:
-#             Dictionary containing spam detection results
-#         """
-#         try:
-#             # Prepare the prompt
-#             prompt=self.prompt_template.format(
-#                 from_address=email_data.get('from', ''),
-#                 subject=email_data.get('subject', ''),
-#                 body=email_data.get('body', '')
-#             )
-
-#             # Get response from LLM
-#             llm_response=await self.llm.agenerate([prompt])
-#             response_text=llm_response.generations[0][0].text
-
-#             # Parse the response
-#             result=self.output_parser.parse(response_text)
-
-#             return {
-#                 'is_spam': result.is_spam,
-#                 'confidence': result.confidence,
-#                 'reasoning': result.reasoning
-#             }
-
-#         except Exception as e:
-#             print(f"Error during spam detection: {str(e)}")
-#             return None
-
-#     async def detect_spam_batch(self, email_data_list: List[Dict[str, Any]]) -> List[Optional[Dict[str, Any]]]:
-#         """Detect spam in multiple emails concurrently.
-
-#         Args:
-#             email_data_list: List of dictionaries containing email information
-
-#         Returns:
-#             List of dictionaries containing spam detection results
-#         """
-#         async def process_single_email(email_data: Dict[str, Any]) -> Optional[Dict[str, Any]]:
-#             async with self.semaphore:
-#                 return await self.detect_spam(email_data)
-
-#         tasks=[process_single_email(email_data)
-#                  for email_data in email_data_list]
-#         return await asyncio.gather(*tasks)

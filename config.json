@@ -1,0 +1,25 @@
+{
+    "accounts": [
+        {
+            "account_id": "default",
+            "credentials_path": "credentials/gmail_credentials.json",
+            "token_path": "credentials/main_token.pickle",
+            "email": "phyopyaemaung1@gmail.com",
+            "timezone": "UTC"
+        },
+        {
+            "account_id": "school",
+            "credentials_path": "credentials/gmail_credentials.json",
+            "token_path": "credentials/school_token.pickle",
+            "email": "ppaung@uci.edu",
+            "timezone": "UTC"
+        }
+    ],
+    "settings": {
+        "fetch_interval_minutes": 30,
+        "max_emails_per_fetch": 50,
+        "retention_days": 30,
+        "default_reminder_minutes": 30,
+        "log_level": "INFO"
+    }
+}
