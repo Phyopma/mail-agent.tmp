@@ -264,49 +264,39 @@ class UnifiedEmailAnalyzer:
           * Read-only updates
           * No action or response expected
 
-        For tool detection, be VERY STRICT and conservative about recommending tools. Only suggest tools for emails that CLEARLY require action and contain EXPLICIT information needed for that action. Be extremely cautious about suggesting tools for low-priority or non-work emails.
-        
-        IMPORTANT: The system will ONLY execute tool actions for emails that are:
-        1. HIGH PRIORITY (CRITICAL, URGENT, or HIGH priority levels only)
-        2. From IMPORTANT CATEGORIES (WORK, PERSONAL, or SCHOOL categories only)
-        
-        For all other emails (lower priority or other categories), you should generally recommend NONE for required_tools, as the system will not act on these recommendations anyway.
-        
-        When determining tools, follow these strict guidelines:
+        For tool detection, carefully analyze the email content and identify ALL tools that are needed. Multiple tools can be required for a single email. For example, an email might need both a calendar event and a reminder, or both a task and a calendar event.
 
-        1. Calendar Events - ONLY recommend when ALL of these conditions are met:
-           - Email EXPLICITLY contains a meeting invitation or scheduling request
-           - SPECIFIC date and time are clearly mentioned (not vague references)
-           - Purpose of the meeting is clearly defined
-           - Email contains sufficient details to create a meaningful calendar entry
-           - The meeting appears to be important and relevant to the recipient
-           If recommended, extract and format all relevant details (title, start/end time, description, attendees)
+        1. Calendar Events - Required when the email contains:
+           - Meeting invitations or scheduling requests
+           - Event details with specific date and time
+           - Conference or appointment scheduling
+           - Location information or virtual meeting links
+           - List of attendees or participants
+           If detected, extract and format all relevant details (title, start/end time, description, attendees)
 
-        2. Tasks - ONLY recommend when ALL of these conditions are met:
-           - Email EXPLICITLY assigns work items or action items to the recipient
-           - Clear deadlines or timeframes are specified
-           - The task has clear ownership and responsibility
-           - The task appears to be important and relevant to the recipient's work
-           - There is sufficient context to create a meaningful task entry
-           If recommended, extract and format all relevant details (title, due date, priority, description, assignees)
+        2. Tasks - Required when the email contains:
+           - Assigned work items or action items
+           - Project tasks with owners
+           - Delegated responsibilities
+           - Work assignments with deadlines
+           - Team collaboration tasks
+           If detected, extract and format all relevant details (title, due date, priority, description, assignees)
 
-        3. Reminders - ONLY recommend when ALL of these conditions are met:
-           - Email EXPLICITLY requests follow-up or contains a clear deadline
-           - The reminder is for a specific, concrete action (not vague)
-           - The reminder has a clear timeframe
-           - The reminder appears to be important to the recipient
-           - There is sufficient context to create a meaningful reminder
-           If recommended, extract and format all relevant details (title, due date, priority, description)
+        3. Reminders - Required when the email contains:
+           - Personal follow-up requests
+           - Simple to-do items
+           - Important dates to remember
+           - Non-work related deadlines
+           - Individual action items
+           If detected, extract and format all relevant details (title, due date, priority, description)
 
-        4. No Tools (NONE) - This should be your DEFAULT recommendation when:
-           - Email is purely informational
-           - Email is low priority (NORMAL, LOW, or IGNORE)
-           - Email is from non-important categories (MARKETING, NEWSLETTER, etc.)
-           - Email lacks specific actionable details
-           - Email is spam or marketing content
-           - There is any uncertainty about whether a tool is truly needed
+        4. No Tools - When the email:
+           - Is purely informational
+           - Requires no specific action tracking
+           - Contains no scheduling or deadline information
+           - Is spam or marketing content
 
-        Remember: It is better to recommend NO tools than to recommend inappropriate tools. Be extremely conservative in your recommendations.
+        Note: A single email can require multiple tools. Analyze thoroughly and include ALL applicable tools.
 
         For each tool requirement:
         1. First determine if the tool is needed based on the above criteria

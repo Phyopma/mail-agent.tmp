@@ -1,0 +1,14 @@
+Metadata-Version: 2.2
+Name: mail_agent
+Version: 0.1
+Requires-Python: >=3.8
+Requires-Dist: google-auth>=2.3.0
+Requires-Dist: google-api-python-client>=2.84.0
+Requires-Dist: google-auth-oauthlib>=0.4.6
+Requires-Dist: python-dotenv>=0.19.0
+Requires-Dist: argparse>=1.4.0
+Requires-Dist: aiohttp>=3.8.0
+Requires-Dist: pydantic>=2.0.0
+Requires-Dist: pytz>=2023.3
+Dynamic: requires-dist
+Dynamic: requires-python

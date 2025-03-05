@@ -1,1 +1,7 @@
-.credentials/*
+credentials/*
+
+
+config.json
+
+
+*/__pycache__/
