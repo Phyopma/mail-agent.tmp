@@ -76,7 +76,7 @@ async def process_email_pipeline(email_data: Dict[str, Any],
             print("Analysis failed")
             return None
 
-           # Check if email meets criteria for performing actions:
+        # Check if email meets criteria for performing actions:
         # 1. Priority must be CRITICAL, URGENT, or HIGH
         # 2. Category must be WORK, PERSONAL, or SCHOOL
         priority = analysis_result.get('priority')
@@ -161,6 +161,14 @@ async def process_email_pipeline(email_data: Dict[str, Any],
         print("Applying tags...")
         tagged_email = tagger.tag_email(email_data, analysis_result)
 
+        # Convert analysis result to JSON serializable format
+        serializable_analysis = {}
+        for key, value in analysis_result.items():
+            if hasattr(value, 'model_dump'):
+                serializable_analysis[key] = value.model_dump()
+            else:
+                serializable_analysis[key] = value
+
         # Format complete result
         result = {
             'metadata': {
@@ -177,13 +185,26 @@ async def process_email_pipeline(email_data: Dict[str, Any],
                 'status': preprocessed['preprocessing_status'],
                 'content_length': len(preprocessed['cleaned_body'])
             },
-            'analysis': analysis_result,
+            'analysis': serializable_analysis,
             'tagging': tagged_email['tags']
         }
 
+        print("Processing complete", json.dumps(result, indent=4))
+
         # Convert tag names to label IDs and mark as processed
+        # Debug: Print tags and available label IDs to diagnose the issue
+        print(f"Email tags: {tagged_email['tags']}")
+        print(f"Available label IDs keys: {list(label_ids.keys())}")
+        
         tag_label_ids = [label_ids[tag] for tag in tagged_email['tags']
                          if tag in label_ids]
+        
+        # Debug: Print which tags were found and which weren't
+        found_tags = [tag for tag in tagged_email['tags'] if tag in label_ids]
+        missing_tags = [tag for tag in tagged_email['tags'] if tag not in label_ids]
+        print(f"Found tags: {found_tags}")
+        print(f"Missing tags: {missing_tags}")
+        print(f"Tag label IDs to apply: {tag_label_ids}")
 
         processed_label_id = label_ids.get('ProcessedByAgent')
         if processed_label_id:

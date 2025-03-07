@@ -42,6 +42,10 @@ class EmailFetcher:
     async def fetch_gmail_emails(self) -> List[Dict[str, Any]]:
         """Fetch unprocessed emails from Gmail within the last 24 hours.
 
+        Filters out:
+        - Emails with the ProcessedByAgent label
+        - Emails received before 1 day ago
+
         Returns:
             List of standardized email objects
         """
@@ -55,6 +59,9 @@ class EmailFetcher:
 
         for account_id, gmail_service in self.gmail_services.items():
             print(f"Fetching Gmail emails for account {account_id}...")
+            # Query to filter emails:
+            # - after:yesterday - only emails from the last 24 hours
+            # - -label:ProcessedByAgent - exclude emails already processed
             query = f"after:{yesterday} -label:{self.processed_tag}"
 
             try:

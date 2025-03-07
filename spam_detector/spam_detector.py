@@ -130,7 +130,7 @@ class UnifiedEmailAnalyzer:
                 # model_name="qwen2.5:14b-instruct-q4_0",
                 # model_name="granite3.1-dense:8b-instruct-q4_K_S",
                 temperature=0,
-                max_tokens=6000,
+                max_tokens=8000,
                 callbacks=None  # Disable LangSmith tracking
             )
         else:  # lmstudio
@@ -141,7 +141,8 @@ class UnifiedEmailAnalyzer:
                 # model_name="qwen2.5-14b-instruct-1m",
                 model_name="meta-llama-3.1-8b-instruct",
                 temperature=0,
-                max_tokens=6000
+                max_tokens=8000,
+                callbacks=None  # Disable LangSmith tracking
             )
 
         self.semaphore = asyncio.Semaphore(max_concurrent_requests)

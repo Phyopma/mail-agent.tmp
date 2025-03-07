@@ -1,21 +1,42 @@
 """Email Preprocessor Module for Mail Agent.
 
 This module handles cleaning and standardizing email content by removing HTML,
-extracting text, and preparing the content for LLM processing.
+extracting text, and preparing the content for LLM processing. It ensures the
+output fits within specified length limits while preserving essential information.
 """
 
-from typing import Dict, Any
+from typing import Dict, Any, List, Tuple
 from bs4 import BeautifulSoup
 import re
 import base64
 import html
+from collections import defaultdict
 
 
 class EmailPreprocessor:
     """Handles cleaning and standardizing email content."""
 
-    def __init__(self):
+    def __init__(self, max_chars: int = 3000):
         self.html_parser = 'html.parser'
+        self.max_chars = max_chars
+        self.common_signatures = [
+            r'Best regards',
+            r'Kind regards',
+            r'Regards',
+            r'Thanks',
+            r'Sincerely',
+            r'Cheers',
+            r'\s*--+\s*',  # Signature separator
+            r'Sent from my \w+',  # Mobile signatures
+            r'Get Outlook for \w+',  # Email client signatures
+        ]
+        self.disclaimer_patterns = [
+            r'CONFIDENTIALITY NOTICE',
+            r'DISCLAIMER',
+            r'This email and any files transmitted with it',
+            r'This message contains confidential information',
+            r'This email is intended only for',
+        ]
 
     def preprocess_email(self, email_data: Dict[str, Any]) -> Dict[str, Any]:
         """Clean and standardize email content.
@@ -37,8 +58,12 @@ class EmailPreprocessor:
             # Clean the content
             cleaned_text = self._clean_html(decoded_content)
             cleaned_text = self._clean_urls(cleaned_text)
+            cleaned_text = self._remove_signatures_and_disclaimers(cleaned_text)
             cleaned_text = self._normalize_whitespace(cleaned_text)
             cleaned_text = self._clean_special_characters(cleaned_text)
+            
+            # Ensure text fits within max length while preserving context
+            cleaned_text = self._limit_text_length(cleaned_text)
 
             # Update email data with cleaned content
             processed_email = email_data.copy()
@@ -116,6 +141,113 @@ class EmailPreprocessor:
 
         # Remove leading/trailing whitespace
         return text.strip()
+
+    def _remove_signatures_and_disclaimers(self, text: str) -> str:
+        """Remove email signatures and legal disclaimers.
+
+        Args:
+            text: Text content to clean
+
+        Returns:
+            Text with signatures and disclaimers removed
+        """
+        # Split text into lines for processing
+        lines = text.split('\n')
+        filtered_lines = []
+        skip_section = False
+
+        for line in lines:
+            # Check if line starts a disclaimer section
+            if any(re.search(pattern, line, re.IGNORECASE) for pattern in self.disclaimer_patterns):
+                skip_section = True
+                continue
+
+            # Check if line is part of a signature
+            if any(re.search(pattern, line, re.IGNORECASE) for pattern in self.common_signatures):
+                continue
+
+            if not skip_section:
+                filtered_lines.append(line)
+
+        return '\n'.join(filtered_lines)
+
+    def _limit_text_length(self, text: str) -> str:
+        """Limit text length while preserving context and important information.
+
+        Args:
+            text: Text content to limit
+
+        Returns:
+            Text limited to max_chars while preserving context
+        """
+        if len(text) <= self.max_chars:
+            return text
+
+        # Split text into paragraphs
+        paragraphs = text.split('\n\n')
+
+        # Calculate importance scores for paragraphs
+        scored_paragraphs = []
+        for i, para in enumerate(paragraphs):
+            score = self._calculate_paragraph_importance(para, i, len(paragraphs))
+            scored_paragraphs.append((score, para))
+
+        # Sort paragraphs by importance
+        scored_paragraphs.sort(reverse=True)
+
+        # Build final text within length limit
+        result = []
+        current_length = 0
+
+        for _, para in scored_paragraphs:
+            if current_length + len(para) + 2 <= self.max_chars:  # +2 for '\n\n'
+                result.append(para)
+                current_length += len(para) + 2
+
+        return '\n\n'.join(result)
+
+    def _calculate_paragraph_importance(self, paragraph: str, position: int, total_paragraphs: int) -> float:
+        """Calculate importance score for a paragraph based on various factors.
+
+        Args:
+            paragraph: Paragraph text
+            position: Position in the email (0-based)
+            total_paragraphs: Total number of paragraphs
+
+        Returns:
+            Importance score (higher is more important)
+        """
+        score = 0.0
+
+        # Position-based scoring (prioritize start and end of email)
+        if position == 0:  # First paragraph
+            score += 5.0
+        elif position == total_paragraphs - 1:  # Last paragraph
+            score += 3.0
+        elif position < total_paragraphs * 0.3:  # Early paragraphs
+            score += 2.0
+
+        # Content-based scoring
+        lower_para = paragraph.lower()
+        
+        # Check for action items and questions
+        if any(word in lower_para for word in ['please', 'action', 'required', 'needed', 'urgent']):
+            score += 3.0
+        if '?' in paragraph:
+            score += 2.0
+
+        # Check for dates and times
+        if re.search(r'\b\d{1,2}[/-]\d{1,2}[/-]\d{2,4}\b|\b\d{1,2}:\d{2}\b', paragraph):
+            score += 2.0
+
+        # Length penalty for very short or very long paragraphs
+        para_len = len(paragraph)
+        if 50 <= para_len <= 300:
+            score += 1.0
+        elif para_len > 300:
+            score -= (para_len - 300) / 300
+
+        return score
 
     def _clean_special_characters(self, text: str) -> str:
         """Clean special characters and emojis while preserving essential punctuation.

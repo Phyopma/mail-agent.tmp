@@ -43,13 +43,25 @@ class EmailTagger:
 
             # Add priority tag if available
             if priority:
-                priority_tag = f"{self.priority_prefix}{priority.lower().capitalize()}"
+                # Format priority tag to match exactly with Gmail label format
+                # Extract just the value part if it's in format like EmailPriority.LOW
+                if '.' in str(priority):
+                    priority_value = str(priority).split('.')[-1].capitalize()
+                else:
+                    priority_value = str(priority).capitalize()
+                priority_tag = f"{self.priority_prefix}{priority_value}"
                 if priority_tag not in email_data['tags']:
                     email_data['tags'].append(priority_tag)
 
             # Add category tag if available
             if category:
-                category_tag = f"{self.category_prefix}{category.lower().capitalize()}"
+                # Format category tag to match exactly with Gmail label format
+                # Extract just the value part if it's in format like EmailCategory.MARKETING
+                if '.' in str(category):
+                    category_value = str(category).split('.')[-1].capitalize()
+                else:
+                    category_value = str(category).capitalize()
+                category_tag = f"{self.category_prefix}{category_value}"
                 if category_tag not in email_data['tags']:
                     email_data['tags'].append(category_tag)
 
