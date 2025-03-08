@@ -22,6 +22,28 @@ class EmailTagger:
         self.priority_prefix = f"{EmailTag.PRIORITY.value}/"
         self.category_prefix = f"{EmailTag.CATEGORY.value}/"
 
+    def _normalize_enum_value(self, value: Any) -> str:
+        """Normalize enum values to consistent string format.
+
+        Args:
+            value: Enum value or string to normalize
+
+        Returns:
+            Normalized string value in Title Case
+        """
+        if value is None:
+            return ""
+
+        # Convert to string and handle different formats
+        str_value = str(value)
+
+        # If it's in format like "EnumName.VALUE" or contains a dot
+        if '.' in str_value:
+            str_value = str_value.split('.')[-1]
+
+        # Return in Title Case format (first letter capitalized, rest lowercase)
+        return str_value.title()
+
     def tag_email(self, email_data: Dict[str, Any], analysis_result: Dict[str, Any]) -> Dict[str, Any]:
         """Apply priority and category tags based on LLM analysis.
 
@@ -43,27 +65,19 @@ class EmailTagger:
 
             # Add priority tag if available
             if priority:
-                # Format priority tag to match exactly with Gmail label format
-                # Extract just the value part if it's in format like EmailPriority.LOW
-                if '.' in str(priority):
-                    priority_value = str(priority).split('.')[-1].capitalize()
-                else:
-                    priority_value = str(priority).capitalize()
+                priority_value = self._normalize_enum_value(priority)
                 priority_tag = f"{self.priority_prefix}{priority_value}"
                 if priority_tag not in email_data['tags']:
                     email_data['tags'].append(priority_tag)
+                    print(f"Added priority tag: {priority_tag}")  # Debug log
 
             # Add category tag if available
             if category:
-                # Format category tag to match exactly with Gmail label format
-                # Extract just the value part if it's in format like EmailCategory.MARKETING
-                if '.' in str(category):
-                    category_value = str(category).split('.')[-1].capitalize()
-                else:
-                    category_value = str(category).capitalize()
+                category_value = self._normalize_enum_value(category)
                 category_tag = f"{self.category_prefix}{category_value}"
                 if category_tag not in email_data['tags']:
                     email_data['tags'].append(category_tag)
+                    print(f"Added category tag: {category_tag}")  # Debug log
 
             # Add tagging status
             email_data['tagging_status'] = 'success'
@@ -75,6 +89,7 @@ class EmailTagger:
             error_data = email_data.copy()
             error_data['tagging_status'] = 'error'
             error_data['error_message'] = str(e)
+            print(f"Tagging error: {str(e)}")  # Debug log
             return error_data
 
     def tag_email_batch(self, email_data_list: List[Dict[str, Any]],

@@ -65,16 +65,82 @@ async def process_email_pipeline(email_data: Dict[str, Any],
 
         # Analyze email
         print("Analyzing...")
-        analysis_result = await analyzer.analyze_email({
+
+        # Create the analysis input data dictionary
+        analysis_input = {
             'from': email_data['from'],
             'subject': email_data['subject'],
             'received_date': email_data['date'],
             'body': preprocessed['cleaned_body']
-        }, timezone)
+        }
+
+        # Debug: Print the text being sent to LLM
+        print("\n=== DEBUG: TEXT BEING SENT TO LLM ===")
+        print(f"FROM: {analysis_input['from']}")
+        print(f"SUBJECT: {analysis_input['subject']}")
+        print(f"RECEIVED: {analysis_input['received_date']}")
+        print("\nBODY (first 500 chars):")
+        print(f"{analysis_input['body'][:500]}..." if len(
+            analysis_input['body']) > 500 else analysis_input['body'])
+        print("=" * 60 + "\n")
+
+        # Send to LLM for analysis
+        analysis_result = await analyzer.analyze_email(analysis_input, timezone)
 
         if not analysis_result:
             print("Analysis failed")
             return None
+
+        # Also print the LLM's response for debugging
+        print("\n=== DEBUG: LLM RESPONSE ===")
+        print(f"PRIORITY: {analysis_result.get('priority')}")
+        print(f"CATEGORY: {analysis_result.get('category')}")
+        print(f"IS_SPAM: {analysis_result.get('is_spam')}")
+        print(f"REQUIRED TOOLS: {analysis_result.get('required_tools')}")
+        print(f"REASONING: {analysis_result.get('reasoning')[:300]}..." if analysis_result.get(
+            'reasoning') and len(analysis_result.get('reasoning')) > 300 else analysis_result.get('reasoning'))
+        print("=" * 60 + "\n")
+
+        # Check if email is spam, if so, delete it and skip further processing
+        if analysis_result.get('is_spam') == 'SPAM':
+            print(f"Email detected as SPAM - Deleting and skipping further processing")
+
+            try:
+                # Get Gmail service for this account
+                service = fetcher.gmail_services[email_data['account_id']]
+
+                # Delete the email by moving it to trash
+                await asyncio.to_thread(
+                    service.users().messages().trash(
+                        userId='me',
+                        id=email_data['id']
+                    ).execute
+                )
+
+                print(f"Email successfully moved to trash")
+
+                # Return minimal result for logging purposes
+                return {
+                    'metadata': {
+                        'email_id': email_data['id'],
+                        'account_id': email_data['account_id'],
+                        'timestamp': datetime.now(UTC).isoformat()
+                    },
+                    'email': {
+                        'from': email_data['from'],
+                        'subject': email_data['subject'],
+                        'date': email_data['date']
+                    },
+                    'analysis': {
+                        'is_spam': 'SPAM',
+                        'action_taken': 'deleted'
+                    }
+                }
+            except Exception as e:
+                print(f"Error deleting spam email: {str(e)}")
+                # Continue with processing if deletion fails
+        else:
+            print(f"Email categorized as NOT SPAM - Continuing with processing")
 
         # Check if email meets criteria for performing actions:
         # 1. Priority must be CRITICAL, URGENT, or HIGH
@@ -195,13 +261,33 @@ async def process_email_pipeline(email_data: Dict[str, Any],
         # Debug: Print tags and available label IDs to diagnose the issue
         print(f"Email tags: {tagged_email['tags']}")
         print(f"Available label IDs keys: {list(label_ids.keys())}")
-        
-        tag_label_ids = [label_ids[tag] for tag in tagged_email['tags']
-                         if tag in label_ids]
-        
+
+        # Normalize label keys for more robust matching
+        normalized_label_ids = {}
+        for key, value in label_ids.items():
+            # Create a normalized version of each key (lowercase with no spaces)
+            normalized_key = key.lower().replace(' ', '')
+            normalized_label_ids[normalized_key] = value
+            # Keep the original key as well
+            normalized_label_ids[key] = value
+
+        # Now try matching tags with both original and normalized label keys
+        tag_label_ids = []
+        for tag in tagged_email['tags']:
+            # Try exact match first
+            if tag in label_ids:
+                tag_label_ids.append(label_ids[tag])
+            # Try normalized match (remove spaces and lowercase)
+            elif tag.lower().replace(' ', '') in normalized_label_ids:
+                tag_label_ids.append(
+                    normalized_label_ids[tag.lower().replace(' ', '')])
+            # If we still can't find it, it's truly missing
+
         # Debug: Print which tags were found and which weren't
-        found_tags = [tag for tag in tagged_email['tags'] if tag in label_ids]
-        missing_tags = [tag for tag in tagged_email['tags'] if tag not in label_ids]
+        found_tags = [tag for tag in tagged_email['tags']
+                      if tag in label_ids or tag.lower().replace(' ', '') in normalized_label_ids]
+        missing_tags = [tag for tag in tagged_email['tags']
+                        if tag not in label_ids and tag.lower().replace(' ', '') not in normalized_label_ids]
         print(f"Found tags: {found_tags}")
         print(f"Missing tags: {missing_tags}")
         print(f"Tag label IDs to apply: {tag_label_ids}")
