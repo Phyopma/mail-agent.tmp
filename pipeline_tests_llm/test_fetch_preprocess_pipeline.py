@@ -122,7 +122,7 @@ async def run_pipeline(credentials_path: str, token_path: str, analyzer_type: st
 
                     # Apply tags based on analysis
                     print("\nApplying tags...")
-                    tagged_email = tagger.tag_email(email, analysis_result)
+                    tagged_email = await tagger.tag_email(email, analysis_result)
                     result['tagging'] = tagged_email['tags']
 
                     # Print complete results including tags

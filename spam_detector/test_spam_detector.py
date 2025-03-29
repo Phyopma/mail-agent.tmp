@@ -96,5 +96,41 @@ async def test_email_analysis():
         print("\n" + "-"*50)
 
 
+async def test_batch_email_analysis():
+    """Test the batch email analysis functionality."""
+    analyzer = UnifiedEmailAnalyzer()
+
+    print("\nTesting Batch Email Analysis...\n")
+    print(f"Processing {len(SAMPLE_EMAILS)} emails concurrently...")
+
+    import time
+    start_time = time.time()
+
+    # Process all emails in a batch
+    results = await analyzer.analyze_email_batch(SAMPLE_EMAILS)
+
+    end_time = time.time()
+    elapsed_time = end_time - start_time
+
+    print(f"\nBatch processing completed in {elapsed_time:.2f} seconds")
+    print(
+        f"Average time per email: {elapsed_time/len(SAMPLE_EMAILS):.2f} seconds")
+
+    # Print summary of results
+    print("\nBatch Results Summary:")
+    for i, (email, result) in enumerate(zip(SAMPLE_EMAILS, results), 1):
+        if result:
+            print(
+                f"{i}. {email['subject']} - {result['is_spam']} - {result['category']} - {result['priority']}")
+        else:
+            print(f"{i}. {email['subject']} - Analysis failed")
+
+    print("\n" + "-"*50)
+
+
 if __name__ == "__main__":
-    asyncio.run(test_email_analysis())
+    # Run individual email analysis test
+    # asyncio.run(test_email_analysis())
+
+    # Run batch email analysis test
+    asyncio.run(test_batch_email_analysis())

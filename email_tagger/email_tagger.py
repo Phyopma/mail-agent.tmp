@@ -44,8 +44,10 @@ class EmailTagger:
         # Return in Title Case format (first letter capitalized, rest lowercase)
         return str_value.title()
 
-    def tag_email(self, email_data: Dict[str, Any], analysis_result: Dict[str, Any]) -> Dict[str, Any]:
+    async def tag_email(self, email_data: Dict[str, Any], analysis_result: Dict[str, Any]) -> Dict[str, Any]:
         """Apply priority and category tags based on LLM analysis.
+
+        This async method allows for consistent integration with the async pipeline.
 
         Args:
             email_data: Original email data dictionary
@@ -92,8 +94,8 @@ class EmailTagger:
             print(f"Tagging error: {str(e)}")  # Debug log
             return error_data
 
-    def tag_email_batch(self, email_data_list: List[Dict[str, Any]],
-                        analysis_results: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    async def tag_email_batch(self, email_data_list: List[Dict[str, Any]],
+                              analysis_results: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         """Apply tags to multiple emails based on batch analysis results.
 
         Args:
@@ -109,7 +111,7 @@ class EmailTagger:
 
         tagged_emails = []
         for email_data, analysis in zip(email_data_list, analysis_results):
-            tagged_email = self.tag_email(email_data, analysis)
+            tagged_email = await self.tag_email(email_data, analysis)
             tagged_emails.append(tagged_email)
 
         return tagged_emails
