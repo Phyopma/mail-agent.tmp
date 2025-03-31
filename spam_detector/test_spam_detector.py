@@ -4,7 +4,7 @@ This script validates the email analysis functionality using sample emails.
 """
 
 import asyncio
-from spam_detector import UnifiedEmailAnalyzer
+from unified_email_analyzer import UnifiedEmailAnalyzer
 
 # Sample emails for testing
 SAMPLE_EMAILS = [
@@ -130,7 +130,7 @@ async def test_batch_email_analysis():
 
 if __name__ == "__main__":
     # Run individual email analysis test
-    # asyncio.run(test_email_analysis())
+    asyncio.run(test_email_analysis())
 
     # Run batch email analysis test
-    asyncio.run(test_batch_email_analysis())
+    # asyncio.run(test_batch_email_analysis())

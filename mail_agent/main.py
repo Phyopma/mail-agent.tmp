@@ -608,9 +608,9 @@ def main():
     parser.add_argument(
         '--analyzer',
         type=str,
-        choices=['ollama', 'lmstudio', 'openrouter'],
-        default='openrouter',
-        help='Type of analyzer to use (ollama or lmstudio or openrouter)'
+        choices=['ollama', 'lmstudio', 'openrouter', 'groq'],
+        default='groq',
+        help='Type of analyzer to use (ollama or lmstudio or openrouter, groq)'
     )
     parser.add_argument(
         '--timezone',

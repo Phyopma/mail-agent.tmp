@@ -54,12 +54,12 @@ htmlcov/
 spam/
 category/
 
-
+.DS_Store
 
 accounts.json
 config.json
 accounts.json
 
-
+**/__pycache__
 
 logs/

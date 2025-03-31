@@ -22,14 +22,17 @@ import asyncio
 import traceback
 from datetime import datetime, timedelta
 from pathlib import Path
+import dotenv
 
 # Add project root to path
 sys.path.insert(0, str(Path(__file__).parent))
 
-# Import Mail Agent modules
 
 # Set up logger
 logger = get_logger("health_check")
+
+# Load environment variables from .env file if it exists
+dotenv.load_dotenv(Path(__file__).parent / ".env")
 
 
 async def check_credentials():
@@ -84,6 +87,7 @@ async def check_llm_backend():
             if not api_key:
                 return False, "Groq API key not found in environment variables"
             logger.info("Groq API key found in environment")
+            logger.info(api_key)
 
         # Initialize analyzer with explicit backend parameter
         analyzer = UnifiedEmailAnalyzer(backend=analyzer_type)
