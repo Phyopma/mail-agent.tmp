@@ -1,9 +1,8 @@
-"""Spam Detection Module.
+"""Spam detector module for analyzing emails.
 
-This module provides functionality for detecting spam emails using LLM-based analysis.
+This module provides functionality for analyzing emails and detecting spam.
 """
 
-# from .spam_detector import SpamDetector
-from .spam_detector import UnifiedEmailAnalyzer, ToolAction
+from .unified_email_analyzer import UnifiedEmailAnalyzer, ToolAction
 
 __all__ = ['UnifiedEmailAnalyzer', 'ToolAction']

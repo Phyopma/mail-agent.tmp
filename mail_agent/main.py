@@ -17,7 +17,7 @@ import json
 import sys
 import os
 from datetime import datetime, UTC
-from typing import Dict, Any, List
+from typing import Dict, Any, List, Optional
 from dotenv import load_dotenv
 
 # Import components
@@ -27,6 +27,12 @@ from spam_detector import UnifiedEmailAnalyzer, ToolAction
 from email_tagger import EmailTagger
 from calendar_agent import CalendarAgent
 
+from .config import config
+from .logger import get_logger
+
+# Initialize logger
+logger = get_logger(__name__)
+
 
 async def process_email_pipeline(email_data: Dict[str, Any],
                                  preprocessor: EmailPreprocessor,
@@ -35,7 +41,7 @@ async def process_email_pipeline(email_data: Dict[str, Any],
                                  tagger: EmailTagger,
                                  fetcher: EmailFetcher,
                                  label_ids: Dict[str, str],
-                                 timezone: str) -> Dict[str, Any]:
+                                 timezone: str) -> Optional[Dict[str, Any]]:
     """Process a single email through the complete pipeline.
 
     Args:
@@ -52,121 +58,72 @@ async def process_email_pipeline(email_data: Dict[str, Any],
         Dictionary containing processing results
     """
     try:
-        print(f"\nProcessing email: {email_data['subject']}")
-        print("-" * 60)
+        logger.info(f"Processing email: {email_data.get('id', 'Unknown ID')}")
+        logger.info(f"Subject: {email_data.get('subject', 'No subject')}")
 
         # Preprocess email
-        print("Preprocessing...")
+        logger.info("Preprocessing email...")
         preprocessed = preprocessor.preprocess_email(email_data)
 
         if preprocessed['preprocessing_status'] == 'error':
-            print(f"Preprocessing Error: {preprocessed['error_message']}")
+            logger.error(
+                f"Preprocessing error: {preprocessed.get('error_message', 'Unknown error')}")
             return None
 
-        # Analyze email
-        print("Analyzing...")
-
-        # Create the analysis input data dictionary
+        # Prepare analysis input
         analysis_input = {
             'from': email_data['from'],
             'subject': email_data['subject'],
-            'received_date': email_data['date'],
-            'body': preprocessed['cleaned_body']
+            'body': preprocessed['cleaned_body'],
+            'received_date': email_data['date']
         }
 
-        # Debug: Print the text being sent to LLM
-        print("\n=== DEBUG: TEXT BEING SENT TO LLM ===")
-        print(f"FROM: {analysis_input['from']}")
-        print(f"SUBJECT: {analysis_input['subject']}")
-        print(f"RECEIVED: {analysis_input['received_date']}")
-        print("\nBODY (first 500 chars):")
-        print(f"{analysis_input['body'][:500]}..." if len(
-            analysis_input['body']) > 500 else analysis_input['body'])
-        print("=" * 60 + "\n")
+        # Log preprocessing results
+        logger.info(f"FROM: {analysis_input['from']}")
+        logger.info(f"SUBJECT: {analysis_input['subject']}")
+        logger.info(f"RECEIVED: {analysis_input['received_date']}")
+        logger.debug(
+            f"BODY (first 500 chars): {analysis_input['body'][:500]}...")
 
         # Send to LLM for analysis
+        logger.info("Analyzing email...")
         analysis_result = await analyzer.analyze_email(analysis_input, timezone)
 
         if not analysis_result:
-            print("Analysis failed")
+            logger.error("Analysis failed")
             return None
 
-        # Also print the LLM's response for debugging
-        print("\n=== DEBUG: LLM RESPONSE ===")
-        print(f"PRIORITY: {analysis_result.get('priority')}")
-        print(f"CATEGORY: {analysis_result.get('category')}")
-        print(f"IS_SPAM: {analysis_result.get('is_spam')}")
-        print(f"REQUIRED TOOLS: {analysis_result.get('required_tools')}")
-        print(f"REASONING: {analysis_result.get('reasoning')[:300]}..." if analysis_result.get(
-            'reasoning') and len(analysis_result.get('reasoning')) > 300 else analysis_result.get('reasoning'))
-        print("=" * 60 + "\n")
+        # Log analysis results
+        logger.info(f"PRIORITY: {analysis_result.get('priority')}")
+        logger.info(f"CATEGORY: {analysis_result.get('category')}")
+        logger.info(f"IS_SPAM: {analysis_result.get('is_spam')}")
+        logger.debug(
+            f"REQUIRED TOOLS: {analysis_result.get('required_tools', [])}")
 
-        # Check if email is spam, if so, delete it and skip further processing
-        if analysis_result.get('is_spam') == 'SPAM':
-            print(f"Email detected as SPAM - Deleting and skipping further processing")
-
-            try:
-                # Get Gmail service for this account
-                service = fetcher.gmail_services[email_data['account_id']]
-
-                # Delete the email by moving it to trash
-                await asyncio.to_thread(
-                    service.users().messages().trash(
-                        userId='me',
-                        id=email_data['id']
-                    ).execute
-                )
-
-                print(f"Email successfully moved to trash")
-
-                # Return minimal result for logging purposes
-                return {
-                    'metadata': {
-                        'email_id': email_data['id'],
-                        'account_id': email_data['account_id'],
-                        'timestamp': datetime.now(UTC).isoformat()
-                    },
-                    'email': {
-                        'from': email_data['from'],
-                        'subject': email_data['subject'],
-                        'date': email_data['date']
-                    },
-                    'analysis': {
-                        'is_spam': 'SPAM',
-                        'action_taken': 'deleted'
-                    }
-                }
-            except Exception as e:
-                print(f"Error deleting spam email: {str(e)}")
-                # Continue with processing if deletion fails
-        else:
-            print(f"Email categorized as NOT SPAM - Continuing with processing")
-
-        # Check if email meets criteria for performing actions:
-        # 1. Priority must be CRITICAL, URGENT, or HIGH
-        # 2. Category must be WORK, PERSONAL, or SCHOOL
-        priority = analysis_result.get('priority')
-        category = analysis_result.get('category')
-
-        # Define high priority levels and important categories
-        high_priority_levels = ['CRITICAL', 'URGENT', 'HIGH']
+        # Only take actions for important emails
+        priority = analysis_result.get('priority', '').upper()
+        category = analysis_result.get('category', '').upper()
+        high_priority_levels = ['URGENT', 'HIGH']
         important_categories = ['WORK', 'PERSONAL', 'SCHOOL']
 
         should_perform_actions = (
             priority in high_priority_levels and
             category in important_categories
         )
-        print(f"{priority} and {category} are determined by llm.")
+
+        logger.info(f"{priority} and {category} determined by LLM")
+
         if not should_perform_actions:
-            print(
+            logger.info(
                 f"Skipping actions: {priority} and {category} don't meet criteria for actions")
         else:
-            print(
+            logger.info(
                 f"Performing actions for {priority} priority {category} email")
+
             # Handle calendar events, reminders, and tasks based on required_tools
             for tool in analysis_result['required_tools']:
-                if tool == ToolAction.CALENDAR:
-                    print("Creating calendar event...")
+                if tool == 'calendar':
+                    logger.info("Creating calendar event...")
                     calendar_event = analysis_result.get('calendar_event')
                     if calendar_event:
                         event_details = {
@@ -179,14 +136,14 @@ async def process_email_pipeline(email_data: Dict[str, Any],
                         }
                         result = await calendar_agent.create_event(event_details, email_data['account_id'])
                         if result['status'] == 'success':
-                            print(
+                            logger.info(
                                 f"Calendar event created successfully: {result['html_link']}")
                         else:
-                            print(
+                            logger.error(
                                 f"Failed to create calendar event: {result['error']}")
 
-                elif tool == ToolAction.REMINDER:
-                    print("Creating reminder...")
+                elif tool == 'reminder':
+                    logger.info("Creating reminder...")
                     reminder = analysis_result.get('reminder')
                     if reminder:
                         result = await calendar_agent.create_reminder(
@@ -199,14 +156,14 @@ async def process_email_pipeline(email_data: Dict[str, Any],
                             account_id=email_data['account_id']
                         )
                         if result['status'] == 'success':
-                            print(
+                            logger.info(
                                 f"Reminder created successfully: {result['html_link']}")
                         else:
-                            print(
+                            logger.error(
                                 f"Failed to create reminder: {result['error']}")
 
-                elif tool == ToolAction.TASK:
-                    print("Creating task...")
+                elif tool == 'task':
+                    logger.info("Creating task...")
                     task = analysis_result.get('task')
                     if task:
                         task_details = {
@@ -218,13 +175,14 @@ async def process_email_pipeline(email_data: Dict[str, Any],
                         }
                         result = await calendar_agent.create_task(task_details, email_data['account_id'])
                         if result['status'] == 'success':
-                            print(
+                            logger.info(
                                 f"Task created successfully: {result['self_link']}")
                         else:
-                            print(f"Failed to create task: {result['error']}")
+                            logger.error(
+                                f"Failed to create task: {result['error']}")
 
         # Apply tags based on analysis
-        print("Applying tags...")
+        logger.info("Applying tags...")
         tagged_email = await tagger.tag_email(email_data, analysis_result)
 
         # Convert analysis result to JSON serializable format
@@ -255,49 +213,23 @@ async def process_email_pipeline(email_data: Dict[str, Any],
             'tagging': tagged_email['tags']
         }
 
-        print("Processing complete", json.dumps(result, indent=4))
+        logger.info("Processing complete")
+        logger.debug(f"Result: {json.dumps(result, indent=4)}")
 
         # Convert tag names to label IDs and mark as processed
-        # Debug: Print tags and available label IDs to diagnose the issue
-        print(f"Email tags: {tagged_email['tags']}")
-        print(f"Available label IDs keys: {list(label_ids.keys())}")
+        logger.debug(f"Email tags: {tagged_email['tags']}")
+        logger.debug(f"Available label IDs keys: {list(label_ids.keys())}")
 
-        # Normalize label keys for more robust matching
-        normalized_label_ids = {}
-        for key, value in label_ids.items():
-            # Create a normalized version of each key (lowercase with no spaces)
-            normalized_key = key.lower().replace(' ', '')
-            normalized_label_ids[normalized_key] = value
-            # Keep the original key as well
-            normalized_label_ids[key] = value
-
-        # Now try matching tags with both original and normalized label keys
-        tag_label_ids = []
-        for tag in tagged_email['tags']:
-            # Try exact match first
-            if tag in label_ids:
-                tag_label_ids.append(label_ids[tag])
-                print(f"Found exact match for tag: {tag}")
-            # Try normalized match (remove spaces and lowercase)
-            elif tag.lower().replace(' ', '') in normalized_label_ids:
-                tag_label_ids.append(
-                    normalized_label_ids[tag.lower().replace(' ', '')])
-                print(f"Found normalized match for tag: {tag}")
-            else:
-                print(f"No match found for tag: {tag}")
-
-        # Remove duplicates from tag_label_ids while preserving order
-        tag_label_ids = list(dict.fromkeys(tag_label_ids))
-
-        processed_label_id = label_ids.get('ProcessedByAgent')
+        processed_label_id = label_ids.get(config.get(
+            'labels', {}).get('processed', 'ProcessedByAgent'))
         if processed_label_id:
-            service = fetcher.gmail_services[email_data['account_id']]
-            try:
-                # More detailed logging before applying labels
-                print(
-                    f"Applying {len(tag_label_ids)} label IDs: {tag_label_ids}")
+            tag_label_ids = []
+            for tag in tagged_email['tags']:
+                if tag in label_ids:
+                    tag_label_ids.append(label_ids[tag])
 
-                # Actually apply the labels
+            try:
+                service = fetcher.gmail_services[email_data['account_id']]
                 await asyncio.to_thread(
                     service.users().messages().modify(
                         userId='me',
@@ -306,16 +238,16 @@ async def process_email_pipeline(email_data: Dict[str, Any],
                             processed_label_id] + tag_label_ids}
                     ).execute
                 )
-                print("Email successfully marked as processed with tags")
+                logger.info("Email successfully marked as processed with tags")
             except Exception as e:
-                print(f"Error applying labels to email: {str(e)}")
+                logger.error(f"Error applying labels to email: {str(e)}")
         else:
-            print("Warning: ProcessedByAgent label ID not found")
+            logger.warning("Warning: ProcessedByAgent label ID not found")
 
         return result
 
     except Exception as e:
-        print(f"Error processing email: {str(e)}")
+        logger.exception(f"Error processing email: {str(e)}")
         return None
 
 
@@ -342,104 +274,157 @@ async def process_batch(email_batch: List[Dict[str, Any]],
     Returns:
         List of processing results
     """
-    # Step 1: Preprocess all emails in the batch
-    print(f"Preprocessing batch of {len(email_batch)} emails...")
-    preprocessed_batch = []
-    original_emails = []  # Keep track of original emails for tagging
-
-    for email_data in email_batch:
-        try:
-            print(f"Preprocessing: {email_data.get('subject', 'No subject')}")
-            preprocessed = preprocessor.preprocess_email(email_data)
-            if preprocessed['preprocessing_status'] == 'error':
-                print(
-                    f"Error preprocessing email: {preprocessed.get('error', 'Unknown error')}")
-                continue
-            preprocessed_batch.append(preprocessed)
-            # Store original email for later use
-            original_emails.append(email_data)
-        except Exception as e:
-            print(f"Exception during preprocessing: {str(e)}")
-
-    # Step 2: Analyze all preprocessed emails in batch
-    if not preprocessed_batch:
-        print("No emails to analyze after preprocessing")
-        return []
-
-    print(f"Analyzing batch of {len(preprocessed_batch)} emails...")
-    analysis_results = await analyzer.analyze_email_batch(preprocessed_batch)
-
-    # Step 3: Tag emails in batch
-    print(f"Tagging batch of {len(original_emails)} emails...")
-    try:
-        tagged_emails = await tagger.tag_email_batch(original_emails, analysis_results)
-    except Exception as e:
-        print(f"Error during batch tagging: {str(e)}")
-        # Fall back to individual tagging if batch tagging fails
-        tagged_emails = []
-        for email, analysis in zip(original_emails, analysis_results):
-            try:
-                tagged_email = await tagger.tag_email(email, analysis)
-                tagged_emails.append(tagged_email)
-            except Exception as tag_e:
-                print(f"Error tagging email: {str(tag_e)}")
-                # Add untagged email to maintain index alignment
-                email['tagging_status'] = 'error'
-                email['error_message'] = str(tag_e)
-                tagged_emails.append(email)
-
-    # Step 4: Process the rest of the pipeline for each email
+    logger.info(f"Processing batch of {len(email_batch)} emails")
     results = []
-    for i, (preprocessed, analysis, tagged_email) in enumerate(zip(preprocessed_batch, analysis_results, tagged_emails)):
-        if not analysis:
-            print(
-                f"Error analyzing email: {preprocessed.get('subject', 'No subject')}")
+
+    # Step 1: Preprocess all emails in the batch
+    preprocessed_batch = []
+    for i, email in enumerate(email_batch):
+        try:
+            preprocessed = preprocessor.preprocess_email(email)
+            preprocessed_batch.append(preprocessed)
+        except Exception as e:
+            logger.error(f"Error preprocessing email {i}: {str(e)}")
+            # Add a placeholder to maintain index alignment
+            preprocessed_batch.append(
+                {'preprocessing_status': 'error', 'error_message': str(e)})
+
+    # Step 2: Analyze all preprocessed emails in the batch
+    analysis_results = []
+    analysis_inputs = []
+
+    for i, preprocessed in enumerate(preprocessed_batch):
+        email = email_batch[i]
+        if preprocessed['preprocessing_status'] == 'error':
+            logger.error(
+                f"Skipping analysis for email {i} due to preprocessing error")
+            analysis_results.append(None)
             continue
 
-        print(
-            f"Processing analyzed email: {preprocessed.get('subject', 'No subject')}")
-        print(
-            f"Analysis: Spam={analysis['is_spam']}, Category={analysis['category']}, Priority={analysis['priority']}")
+        analysis_input = {
+            'from': email['from'],
+            'subject': email['subject'],
+            'body': preprocessed['cleaned_body'],
+            'received_date': email['date']
+        }
+        analysis_inputs.append(analysis_input)
 
+    # Analyze all inputs in parallel
+    if analysis_inputs:
+        try:
+            # Analyze emails in chunks to avoid overwhelming the LLM service
+            chunk_size = 3
+            for i in range(0, len(analysis_inputs), chunk_size):
+                chunk = analysis_inputs[i:i + chunk_size]
+                chunk_results = await asyncio.gather(
+                    *[analyzer.analyze_email(input_data, timezone)
+                      for input_data in chunk],
+                    return_exceptions=True
+                )
+
+                for result in chunk_results:
+                    if isinstance(result, Exception):
+                        logger.error(f"Error analyzing email: {str(result)}")
+                        analysis_results.append(None)
+                    else:
+                        analysis_results.append(result)
+        except Exception as e:
+            logger.error(f"Error during batch analysis: {str(e)}")
+            # Fill the rest with None if there was an error
+            analysis_results.extend(
+                [None] * (len(analysis_inputs) - len(analysis_results)))
+
+    # Step 3: Tag emails based on analysis
+    tagged_emails = []
+    for i, (email, analysis) in enumerate(zip(email_batch, analysis_results)):
+        if analysis is None:
+            # Add a placeholder to maintain index alignment
+            tagged_emails.append(
+                {'tagging_status': 'error', 'error_message': 'Analysis failed'})
+            continue
+
+        try:
+            tagged_email = await tagger.tag_email(email, analysis)
+            tagged_emails.append(tagged_email)
+        except Exception as tag_e:
+            logger.error(f"Error tagging email: {str(tag_e)}")
+            # Add untagged email to maintain index alignment
+            tagged_emails.append(
+                {'tagging_status': 'error', 'error_message': str(tag_e)})
+
+    # Step 4: Process the rest of the pipeline for each email
+    for i, (preprocessed, analysis, tagged_email) in enumerate(zip(preprocessed_batch, analysis_results, tagged_emails)):
+        if not analysis:
+            logger.error(
+                f"Error analyzing email: {email_batch[i].get('subject', 'No subject')}")
+            continue
+
+        logger.info(
+            f"Processing email {i+1}/{len(email_batch)}: {email_batch[i].get('subject', 'No subject')}")
+
+        email_data = email_batch[i]
+
+        # Format result for this email
         result = {
-            'email_id': preprocessed.get('id'),
-            'gmail_thread_id': preprocessed.get('thread_id'),
-            'subject': preprocessed.get('subject'),
-            'is_spam': analysis['is_spam'],
-            'category': analysis['category'],
-            'priority': analysis['priority'],
-            'required_tools': analysis['required_tools'],
-            'calendar_event': analysis.get('calendar_event'),
-            'reminder': analysis.get('reminder'),
-            'task': analysis.get('task'),
-            'reasoning': analysis.get('reasoning'),
-            'tagging_status': tagged_email.get('tagging_status', 'unknown'),
-            'tags': tagged_email.get('tags', [])
+            'metadata': {
+                'email_id': email_data['id'],
+                'account_id': email_data['account_id'],
+                'timestamp': datetime.now(UTC).isoformat()
+            },
+            'email': {
+                'from': email_data['from'],
+                'subject': email_data['subject'],
+                'date': email_data['date']
+            },
+            'analysis': {
+                'is_spam': analysis.get('is_spam', False),
+                'category': analysis.get('category', 'UNKNOWN'),
+                'priority': analysis.get('priority', 'NORMAL'),
+                'reasoning': analysis.get('reasoning'),
+                'tagging_status': tagged_email.get('tagging_status', 'unknown'),
+                'tags': tagged_email.get('tags', [])
+            }
         }
 
         # Process calendar events if needed
-        if 'calendar' in analysis['required_tools'] and analysis.get('calendar_event'):
+        if 'calendar' in analysis.get('required_tools', []) and analysis.get('calendar_event'):
             try:
-                print("Creating calendar event...")
+                logger.info("Creating calendar event...")
                 calendar_result = await calendar_agent.create_event(analysis['calendar_event'])
                 result['calendar_result'] = calendar_result
             except Exception as e:
-                print(f"Error creating calendar event: {str(e)}")
+                logger.error(f"Error creating calendar event: {str(e)}")
                 result['calendar_result'] = {
                     'status': 'error', 'error': str(e)}
 
         # Mark email as processed in Gmail
         try:
-            print("Tagging email...")
-            tagger_result = await tagger.tag_email(
-                email_id=preprocessed['id'],
-                is_spam=analysis['is_spam'],
-                category=analysis['category'],
-                priority=analysis['priority']
-            )
-            result['tagging_result'] = tagger_result
+            processed_label_id = label_ids.get(config.get(
+                'labels', {}).get('processed', 'ProcessedByAgent'))
+            if processed_label_id:
+                tag_label_ids = []
+                for tag in tagged_email.get('tags', []):
+                    if tag in label_ids:
+                        tag_label_ids.append(label_ids[tag])
+
+                service = fetcher.gmail_services[email_data['account_id']]
+                await asyncio.to_thread(
+                    service.users().messages().modify(
+                        userId='me',
+                        id=email_data['id'],
+                        body={'addLabelIds': [
+                            processed_label_id] + tag_label_ids}
+                    ).execute
+                )
+                logger.info("Email successfully marked as processed with tags")
+                result['tagging_result'] = {
+                    'status': 'success', 'tags': tagged_email.get('tags', [])}
+            else:
+                logger.warning("Warning: ProcessedByAgent label ID not found")
+                result['tagging_result'] = {
+                    'status': 'error', 'error': 'ProcessedByAgent label ID not found'}
         except Exception as e:
-            print(f"Error tagging email: {str(e)}")
+            logger.error(f"Error tagging email: {str(e)}")
             result['tagging_result'] = {'status': 'error', 'error': str(e)}
 
         results.append(result)
@@ -447,8 +432,10 @@ async def process_batch(email_batch: List[Dict[str, Any]],
     return results
 
 
-async def run_pipeline(accounts_config: List[Dict[str, str]], analyzer_type: str = 'ollama',
-                       timezone: str = 'America/Los_Angeles', batch_size: int = None):
+async def run_pipeline(accounts_config: List[Dict[str, str]],
+                       analyzer_type: str = None,
+                       timezone: str = None,
+                       batch_size: int = None):
     """Run the complete email processing pipeline for multiple accounts.
 
     Args:
@@ -458,26 +445,24 @@ async def run_pipeline(accounts_config: List[Dict[str, str]], analyzer_type: str
         batch_size: Number of emails to process in a batch. If None, process one by one.
     """
     try:
-        print("\n=== Starting Email Processing Pipeline ===")
-        print(f"Using {analyzer_type.capitalize()} for analysis")
-        if batch_size:
-            print(f"Using batch processing with batch size of {batch_size}")
-        else:
-            print("Processing emails one by one")
-        print()
+        # Use config values if not overridden
+        analyzer_type = analyzer_type or config.get("analyzer_type")
+        timezone = timezone or config.get("timezone")
+        batch_size = batch_size or config.get("batch_size")
+
+        logger.info(
+            f"Starting pipeline with analyzer_type={analyzer_type}, timezone={timezone}, batch_size={batch_size}")
 
         # Initialize components
         fetcher = EmailFetcher()
         preprocessor = EmailPreprocessor()
-        analyzer = UnifiedEmailAnalyzer(
-            backend=analyzer_type.lower(),
-            max_concurrent_requests=3
-        )
+        # Update parameter name to use the same parameter name consistently
+        analyzer = UnifiedEmailAnalyzer(backend=analyzer_type)
         calendar_agent = CalendarAgent()
         tagger = EmailTagger()
 
         # Setup Gmail clients for all accounts
-        print("Setting up Gmail clients...")
+        logger.info("Setting up Gmail clients...")
         for account in accounts_config:
             account_id = account.get('account_id', 'default')
             await fetcher.setup_gmail(
@@ -487,36 +472,35 @@ async def run_pipeline(accounts_config: List[Dict[str, str]], analyzer_type: str
             )
 
             # Initialize calendar service with same credentials
-            print(f"Setting up calendar service for {account_id}...")
+            logger.info(f"Setting up calendar service for {account_id}...")
             await calendar_agent.setup_calendar(
                 account['credentials_path'],
                 account['token_path'],
                 account_id,
                 account.get('timezone', timezone)
             )
+
         # Fetch unprocessed emails from all accounts
-        print(
-            f"\nFetching unprocessed emails from the last 24 hours...")
+        logger.info("Fetching unprocessed emails from the last 24 hours...")
         all_emails = await fetcher.fetch_all_emails()
 
         if not all_emails:
-            print("No unprocessed emails found.")
+            logger.info("No unprocessed emails found.")
             return
 
-        print(
-            f"\nFound {len(all_emails)} unprocessed emails. Processing...\n")
+        logger.info(
+            f"Found {len(all_emails)} unprocessed emails. Processing...")
 
         # Process emails from all accounts
         results = []
 
         # Determine processing method based on batch_size
-        if (batch_size):
+        if batch_size and batch_size > 1:
             # Process emails in batches of the specified size
             for i in range(0, len(all_emails), batch_size):
                 batch = all_emails[i:i+batch_size]
-                print(
-                    f"\nProcessing batch {i//batch_size + 1} ({len(batch)} emails)")
-                print("-" * 60)
+                logger.info(
+                    f"Processing batch {i//batch_size + 1} ({len(batch)} emails)")
 
                 # Use the existing process_batch function for batch processing
                 batch_results = await process_batch(
@@ -534,8 +518,7 @@ async def run_pipeline(accounts_config: List[Dict[str, str]], analyzer_type: str
         else:
             # Process emails one by one
             for i, email in enumerate(all_emails):
-                print(f"\nProcessing email {i+1} of {len(all_emails)}")
-                print("-" * 60)
+                logger.info(f"Processing email {i+1} of {len(all_emails)}")
 
                 result = await process_email_pipeline(
                     email_data=email,
@@ -552,34 +535,40 @@ async def run_pipeline(accounts_config: List[Dict[str, str]], analyzer_type: str
                     results.append(result)
 
         # Print summary
-        print("\n=== Pipeline Summary ===")
-        print(f"Total emails processed: {len(results)}")
-        print(f"Successful: {len(results)}")
-        print(f"Failed: {len(all_emails) - len(results)}")
+        logger.info("=== Pipeline Summary ===")
+        logger.info(f"Total emails processed: {len(results)}")
+        logger.info(f"Successful: {len(results)}")
+        logger.info(f"Failed: {len(all_emails) - len(results)}")
 
     except Exception as e:
-        print(f"Pipeline Error: {str(e)}")
+        logger.exception(f"Pipeline Error: {str(e)}")
 
 
-async def process_emails(accounts_file: str, analyzer_type: str = 'ollama',
-                         timezone: str = 'America/Los_Angeles', batch_size: int = None):
+async def process_emails(accounts_file: str = None,
+                         analyzer_type: str = None,
+                         timezone: str = None,
+                         batch_size: int = None):
     """Process emails using the pipeline.
 
     Args:
-        accounts_file: Path to JSON file containing account configurations
-        analyzer_type: Type of analyzer to use ('ollama' or 'lmstudio')
-        timezone: Timezone for calendar events
-        batch_size: Number of emails to process in a batch. If None, process one by one.
+        accounts_file: Path to JSON file containing account configurations (overrides config)
+        analyzer_type: Type of analyzer to use (overrides config)
+        timezone: Timezone for calendar events (overrides config)
+        batch_size: Number of emails to process in a batch (overrides config)
     """
     try:
         # Get project root directory
         project_root = os.path.dirname(
             os.path.dirname(os.path.abspath(__file__)))
 
+        # Use provided accounts_file or get from config
+        accounts_file = accounts_file or config.get("accounts_file")
+        accounts_path = os.path.join(project_root, accounts_file)
+
         # Load accounts configuration
-        with open(accounts_file) as f:
-            config = json.load(f)
-            accounts_config = config['accounts']
+        with open(accounts_path) as f:
+            account_config = json.load(f)
+            accounts_config = account_config['accounts']
 
         # Resolve relative paths for credentials
         for account in accounts_config:
@@ -589,10 +578,15 @@ async def process_emails(accounts_file: str, analyzer_type: str = 'ollama',
                 project_root, account['token_path'])
 
         # Run the pipeline
-        await run_pipeline(accounts_config, analyzer_type=analyzer_type, timezone=timezone, batch_size=batch_size)
+        await run_pipeline(
+            accounts_config,
+            analyzer_type=analyzer_type,
+            timezone=timezone,
+            batch_size=batch_size
+        )
 
     except Exception as e:
-        print(f"Error loading accounts configuration: {str(e)}")
+        logger.exception(f"Error loading accounts configuration: {str(e)}")
 
 
 def main():
@@ -604,8 +598,6 @@ def main():
     parser = argparse.ArgumentParser(description='Mail Agent CLI')
     parser.add_argument('--version', action='store_true',
                         help='Show version information')
-    # parser.add_argument('--setup', action='store_true', help='Setup mail agent credentials')
-    # parser.add_argument('--fetch', action='store_true', help='Fetch new emails')
     parser.add_argument('--process', action='store_true',
                         help='Process fetched emails')
     parser.add_argument(
@@ -632,44 +624,41 @@ def main():
         default=None,
         help='Number of emails to process in a batch. If specified, batch processing will be used.'
     )
+    parser.add_argument(
+        '--log-level',
+        type=str,
+        choices=['DEBUG', 'INFO', 'WARNING', 'ERROR', 'CRITICAL'],
+        help='Logging level'
+    )
 
     args = parser.parse_args()
 
-    # Handle version request
     if args.version:
         from mail_agent import __version__
         print(f"Mail Agent version {__version__}")
-        return 0
+        return
 
-    # Handle setup request
-    # if args.setup:
-    #     print("Setting up Mail Agent...")
-    #     # Add setup code here
-    #     return 0
+    if args.log_level:
+        # Update log level if specified
+        log_level = getattr(logging, args.log_level)
+        logger.setLevel(log_level)
+        # Update handlers
+        for handler in logger.handlers:
+            handler.setLevel(log_level)
 
-    # # Handle fetch request
-    # if args.fetch:
-    #     print("Fetching new emails...")
-    #     # Add fetch code here
-    #     return 0
-
-    # Handle process request
     if args.process:
-        if not args.accounts:
-            print("Error: --accounts parameter is required for processing emails")
-            return 1
-
-        print("Processing emails...")
-        asyncio.run(process_emails(args.accounts,
-                    args.analyzer, args.timezone, args.batch_size))
-        return 0
-
-    # If no arguments provided, show help
-    if len(sys.argv) == 1:
+        # Process emails
+        asyncio.run(
+            process_emails(
+                accounts_file=args.accounts,
+                analyzer_type=args.analyzer,
+                timezone=args.timezone,
+                batch_size=args.batch_size
+            )
+        )
+    else:
+        # Show help if no action specified
         parser.print_help()
-        return 0
-
-    return 0
 
 
 if __name__ == "__main__":
