@@ -2,6 +2,9 @@ credentials/*
 
 
 config.json
-
+accounts.json
 
 */__pycache__/
+
+
+logs/

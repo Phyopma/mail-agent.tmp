@@ -1,0 +1,15 @@
+[Unit]
+Description=Mail Agent Service
+After=network.target
+
+[Service]
+Type=oneshot
+User=mailuser
+WorkingDirectory=/path/to/mail-agent
+Environment="PYTHONPATH=/path/to/mail-agent"
+ExecStart=/path/to/mail-agent/venv/bin/python -m mail_agent.main --process
+StandardOutput=append:/path/to/mail-agent/logs/systemd.log
+StandardError=append:/path/to/mail-agent/logs/systemd-error.log
+
+[Install]
+WantedBy=multi-user.target

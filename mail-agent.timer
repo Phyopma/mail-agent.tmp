@@ -1,0 +1,11 @@
+[Unit]
+Description=Run Mail Agent hourly
+Requires=mail-agent.service
+
+[Timer]
+Unit=mail-agent.service
+OnCalendar=hourly
+Persistent=true
+
+[Install]
+WantedBy=timers.target

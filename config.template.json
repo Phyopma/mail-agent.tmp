@@ -1,0 +1,15 @@
+{
+  "analyzer_type": "openrouter",
+  "timezone": "America/Los_Angeles",
+  "batch_size": 5,
+  "log_level": "INFO",
+  "accounts_file": "accounts.json",
+  "labels": {
+    "processed": "ProcessedByAgent",
+    "spam": "Spam",
+    "work": "Work",
+    "personal": "Personal",
+    "important": "Important",
+    "urgent": "Urgent"
+  }
+}
