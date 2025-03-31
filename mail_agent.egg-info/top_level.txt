@@ -1,6 +1,0 @@
-calendar_agent
-email_fetcher
-email_preprocessor
-email_tagger
-mail_agent
-spam_detector

@@ -1,2 +1,0 @@
-[console_scripts]
-mail-agent = mail_agent.main:main
