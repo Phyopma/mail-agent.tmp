@@ -382,7 +382,7 @@ class UnifiedEmailAnalyzer:
                     base_url="https://api.groq.com/openai/v1",
                     api_key=self.groq_api_key,
                 )
-                self.model_name = "deepseek-r1-distill-qwen-32b"
+                self.model_name = "deepseek-r1-distill-llama-70b"
             except ImportError:
                 self.logger.error(
                     "OpenAI package not installed. Please install with 'pip install openai'.")
