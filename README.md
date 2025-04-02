@@ -27,7 +27,7 @@ An intelligent email processing system that automatically categorizes emails, de
    git clone <repository-url>
    cd mail-agent
    python -m venv venv
-   source venv/bin/activate  # On Windows: venv\Scripts\activate
+   source venv/bin/activate
    pip install -e .
 
    # Setup configuration

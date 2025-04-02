@@ -21,7 +21,7 @@ This guide explains how to deploy the Mail Agent application in a production env
 
    ```
    python -m venv venv
-   source venv/bin/activate  # On Windows: venv\Scripts\activate
+   source venv/bin/activate
    pip install -e .
    ```
 
