@@ -94,20 +94,19 @@ class Task(BaseModel):
 class EmailAnalysisResult(BaseModel):
     """Structured output for email analysis following OpenAI guidelines."""
     is_spam: Spam = Field(
-        description="Classifies the email as SPAM or NOT_SPAM based on comprehensive analysis of sender patterns, content characteristics, and red flags. Consider factors like suspicious domains, urgency tactics, unsolicited offers, and requests for sensitive information.")
-
+        description="Classifies the email as SPAM or NOT_SPAM based on comprehensive analysis")
     category: EmailCategory = Field(
-        description="Determines the primary category (WORK/PERSONAL/FAMILY/SOCIAL/MARKETING/SCHOOL/NEWSLETTER/SHOPPING) based on sender relationship, content context, communication style, and purpose. Analyzes tone, formatting, domain, and specific content indicators unique to each category.")
+        description="Determines the primary category of the email")
     priority: EmailPriority = Field(
-        description="Assigns priority level (CRITICAL/URGENT/HIGH/NORMAL/LOW/IGNORE) based on time sensitivity, impact, and required action. Considers explicit deadlines, business impact, emergency nature, and whether a response is needed.")
-    required_tools: List[ToolAction] = Field(
+        description="Assigns priority level based on time sensitivity and impact")
+    required_tools: List[str] = Field(
         description="List of required tools for this email")
     calendar_event: Optional[CalendarEvent] = Field(
-        description="Calendar event details if needed")
+        default=None, description="Calendar event details if needed")
     reminder: Optional[Reminder] = Field(
-        description="Reminder details if needed")
+        default=None, description="Reminder details if needed")
     task: Optional[Task] = Field(
-        description="Task details if needed")
+        default=None, description="Task details if needed")
     reasoning: str = Field(
         description="Reasoning for the tool selection and details")
 

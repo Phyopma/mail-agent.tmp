@@ -91,11 +91,11 @@ class EmailAnalysisResult(BaseModel):
     required_tools: List[str] = Field(
         description="List of required tools for this email")
     calendar_event: Optional[CalendarEvent] = Field(
-        description="Calendar event details if needed")
+        default=None, description="Calendar event details if needed")
     reminder: Optional[Reminder] = Field(
-        description="Reminder details if needed")
+        default=None, description="Reminder details if needed")
     task: Optional[Task] = Field(
-        description="Task details if needed")
+        default=None, description="Task details if needed")
     reasoning: str = Field(
         description="Reasoning for the tool selection and details")
 
