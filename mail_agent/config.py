@@ -55,7 +55,7 @@ class ConfigManager:
                 print(f"Error loading config file: {e}")
 
         # Override with environment variables if they exist
-        self._override_from_env()
+        # self._override_from_env()
 
     def _override_from_env(self) -> None:
         """Override configuration with environment variables."""
@@ -98,6 +98,7 @@ class ConfigManager:
         Returns:
             Dictionary of all configuration values
         """
+        print("Current configuration:", self.config)
         return self.config.copy()
 
     def get_accounts_config(self) -> Dict[str, Any]:

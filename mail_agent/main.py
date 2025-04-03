@@ -16,7 +16,9 @@ import asyncio
 import json
 import sys
 import os
-from datetime import datetime, UTC
+import time
+import random
+from datetime import datetime, UTC, timedelta
 from typing import Dict, Any, List, Optional
 from dotenv import load_dotenv
 
@@ -87,7 +89,7 @@ async def process_email_pipeline(email_data: Dict[str, Any],
 
         # Send to LLM for analysis
         logger.info("Analyzing email...")
-        analysis_result = await analyzer.analyze_email(analysis_input, timezone)
+        analysis_result = await analyzer.analyze_with_retry(analysis_input, timezone)
 
         if not analysis_result:
             logger.error("Analysis failed")
@@ -290,7 +292,6 @@ async def process_batch(email_batch: List[Dict[str, Any]],
                 {'preprocessing_status': 'error', 'error_message': str(e)})
 
     # Step 2: Analyze all preprocessed emails in the batch
-    analysis_results = []
     analysis_inputs = []
 
     for i, preprocessed in enumerate(preprocessed_batch):
@@ -298,7 +299,7 @@ async def process_batch(email_batch: List[Dict[str, Any]],
         if preprocessed['preprocessing_status'] == 'error':
             logger.error(
                 f"Skipping analysis for email {i} due to preprocessing error")
-            analysis_results.append(None)
+            analysis_inputs.append(None)  # Add None placeholder to maintain index alignment
             continue
 
         analysis_input = {
@@ -309,31 +310,31 @@ async def process_batch(email_batch: List[Dict[str, Any]],
         }
         analysis_inputs.append(analysis_input)
 
-    # Analyze all inputs in parallel
+    # Analyze valid inputs in batch with rate limiting
+    analysis_results = []
     if analysis_inputs:
         try:
-            # Analyze emails in chunks to avoid overwhelming the LLM service
-            chunk_size = 3
-            for i in range(0, len(analysis_inputs), chunk_size):
-                chunk = analysis_inputs[i:i + chunk_size]
-                chunk_results = await asyncio.gather(
-                    *[analyzer.analyze_email(input_data, timezone)
-                      for input_data in chunk],
-                    return_exceptions=True
-                )
-
-                for result in chunk_results:
-                    if isinstance(result, Exception):
-                        logger.error(f"Error analyzing email: {str(result)}")
-                        analysis_results.append(None)
+            # Filter out None values before sending to batch analysis
+            valid_inputs = [input_data for input_data in analysis_inputs if input_data is not None]
+            valid_results = await analyzer.analyze_batch_with_rate_limiting(valid_inputs, timezone)
+            
+            # Reconstruct results with None placeholders
+            result_index = 0
+            for input_data in analysis_inputs:
+                if input_data is None:
+                    analysis_results.append(None)
+                else:
+                    if result_index < len(valid_results):
+                        analysis_results.append(valid_results[result_index])
+                        result_index += 1
                     else:
-                        analysis_results.append(result)
+                        analysis_results.append(None)
+                        
         except Exception as e:
             logger.error(f"Error during batch analysis: {str(e)}")
-            # Fill the rest with None if there was an error
-            analysis_results.extend(
-                [None] * (len(analysis_inputs) - len(analysis_results)))
-
+            # Fill with None if there was an error
+            analysis_results = [None] * len(analysis_inputs)
+    
     # Step 3: Tag emails based on analysis
     tagged_emails = []
     for i, (email, analysis) in enumerate(zip(email_batch, analysis_results)):
@@ -495,7 +496,7 @@ async def run_pipeline(accounts_config: List[Dict[str, str]],
         results = []
 
         # Determine processing method based on batch_size
-        if batch_size and batch_size > 1:
+        if (batch_size and batch_size > 1):
             # Process emails in batches of the specified size
             for i in range(0, len(all_emails), batch_size):
                 batch = all_emails[i:i+batch_size]

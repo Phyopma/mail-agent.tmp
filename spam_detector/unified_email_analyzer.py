@@ -1,6 +1,7 @@
 """Unified Email Analyzer module.
 
 This module provides a unified interface for analyzing emails using different LLM backends.
+It includes rate limiting and token tracking functionality to handle API rate limits.
 """
 
 import os
@@ -8,14 +9,39 @@ import json
 import logging
 import re
 import asyncio
-from typing import Dict, Any, List, Optional, Union
+import random
+import time
+from datetime import datetime, UTC, timedelta
+from typing import Dict, Any, List, Optional, Union, Tuple
 from enum import Enum, auto
 from pydantic import BaseModel, Field
 from dotenv import load_dotenv
 from openai import OpenAI
 
+# Import the application's logger
+try:
+    from mail_agent.logger import get_logger
+    logger = get_logger(__name__)
+except ImportError:
+    # Fallback to basic logging if used as standalone module
+    import logging
+    logger = logging.getLogger(__name__)
+    if not logger.handlers:
+        handler = logging.StreamHandler()
+        formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+        handler.setFormatter(formatter)
+        logger.addHandler(handler)
+        logger.setLevel(logging.INFO)
+
 # Load environment variables
 load_dotenv()
+
+# Token rate limits and tracking
+TOKEN_LIMIT_PER_MINUTE = 6000
+token_usage = {
+    'tokens_used': 0,
+    'reset_time': datetime.now(UTC)
+}
 
 
 class EmailCategory(str, Enum):
@@ -115,7 +141,7 @@ class UnifiedEmailAnalyzer:
         self.backend_type = backend or analyzer_type or os.environ.get(
             "MAIL_AGENT_ANALYZER", "groq")
 
-        self.logger = logging.getLogger(__name__)
+        self.logger = logger
         self.logger.info(
             f"Initializing UnifiedEmailAnalyzer with backend: {self.backend_type}")
         self.semaphore = asyncio.Semaphore(max_concurrent_requests)
@@ -426,6 +452,7 @@ class UnifiedEmailAnalyzer:
 
         Returns:
             Dictionary with analysis results or None if analysis failed
+            Results include token_usage data when available
         """
         self.logger.info(
             f"Analyzing email from {email_data.get('from', 'Unknown')} with subject: {email_data.get('subject', 'No subject')}")
@@ -487,6 +514,16 @@ Ensure all values match the expected types and formats. Return only serializable
             self.logger.info(
                 f"API call successful for email: {email_data.get('subject', '')}")
 
+            # Extract token usage from response if available
+            token_usage = None
+            if hasattr(response, 'usage'):
+                token_usage = {
+                    'prompt_tokens': response.usage.prompt_tokens,
+                    'completion_tokens': response.usage.completion_tokens,
+                    'total_tokens': response.usage.total_tokens
+                }
+                self.logger.info(f"API token usage: {token_usage}")
+
             # Check if response has the expected structure
             if not hasattr(response, 'choices') or not response.choices:
                 self.logger.error(f"Response has no choices: {response}")
@@ -509,7 +546,7 @@ Ensure all values match the expected types and formats. Return only serializable
 
                 self.logger.info(
                     f"Successfully parsed result for email: {email_data.get('subject', '')}")
-                return {
+                result_dict = {
                     'is_spam': result.is_spam,
                     'category': result.category,
                     'priority': result.priority,
@@ -519,6 +556,12 @@ Ensure all values match the expected types and formats. Return only serializable
                     'task': result.task,
                     'reasoning': result.reasoning
                 }
+                
+                # Include token usage in result if available
+                if token_usage:
+                    result_dict['token_usage'] = token_usage
+                
+                return result_dict
             except json.JSONDecodeError as json_err:
                 self.logger.error(f"JSON parsing error: {json_err}")
                 self.logger.error(
@@ -566,3 +609,143 @@ Ensure all values match the expected types and formats. Return only serializable
                     results.append(result)
 
         return results
+
+    async def wait_for_rate_limit(self, tokens_used=None):
+        """Wait if we're approaching rate limits.
+        
+        Args:
+            tokens_used: Actual tokens used in the last request (if available)
+        """
+        global token_usage
+        
+        now = datetime.now(UTC)
+        
+        # Reset token count if a minute has passed
+        if (now - token_usage['reset_time']).total_seconds() >= 60:
+            token_usage = {
+                'tokens_used': 0,
+                'reset_time': now
+            }
+            self.logger.debug("Token usage counter reset")
+            return
+        
+        # If we have actual token usage, update our counter
+        if tokens_used:
+            token_usage['tokens_used'] += tokens_used
+            self.logger.debug(f"Token usage updated to {token_usage['tokens_used']}/{TOKEN_LIMIT_PER_MINUTE}")
+        
+        # Check if we would exceed the limit
+        if token_usage['tokens_used'] > TOKEN_LIMIT_PER_MINUTE * 0.8:  # 80% of limit as safety margin
+            # Calculate how long to wait before the next token reset
+            seconds_until_reset = 60 - (now - token_usage['reset_time']).total_seconds()
+            wait_time = max(1, seconds_until_reset)
+            
+            self.logger.info(f"Approaching token limit ({token_usage['tokens_used']}/{TOKEN_LIMIT_PER_MINUTE}). Waiting {wait_time:.2f} seconds")
+            await asyncio.sleep(wait_time)
+            
+            # Reset counter
+            token_usage = {
+                'tokens_used': 0,
+                'reset_time': datetime.now(UTC)
+            }
+
+    async def analyze_with_retry(self, input_data, timezone, max_retries=3):
+        """Analyze an email with retry logic for rate limiting.
+        
+        Args:
+            input_data: Email data to analyze
+            timezone: Timezone for calendar events
+            max_retries: Maximum number of retry attempts
+        
+        Returns:
+            Analysis result or None if all retries fail
+        """
+        retries = 0
+        base_wait = 2  # Base wait time in seconds
+        
+        while retries <= max_retries:
+            try:
+                # Attempt to analyze the email
+                result = await self.analyze_email(input_data, timezone)
+                
+                if result:
+                    # Extract actual token usage from API response if available
+                    if 'token_usage' in result:
+                        token_usage_data = result['token_usage']
+                        total_tokens = token_usage_data.get('total_tokens', 0)
+                        self.logger.info(f"API reported token usage: {total_tokens} tokens")
+                        
+                        # Update the rate limiting counter with actual token count
+                        await self.wait_for_rate_limit(total_tokens)
+                    else:
+                        # Fallback to estimation if token usage not available
+                        estimated_tokens = len(input_data['body']) // 4
+                        await self.wait_for_rate_limit(estimated_tokens)
+                        self.logger.debug(f"No token usage reported by API, using estimate: {estimated_tokens}")
+                
+                return result
+                
+            except Exception as e:
+                error_msg = str(e).lower()
+                retries += 1
+                
+                # Check if this is likely a rate limit error
+                if any(term in error_msg for term in ['rate limit', 'too many requests', 'quota', 'capacity']):
+                    wait_time = base_wait * (2 ** (retries - 1)) * (0.5 + random.random())  # Exponential backoff with jitter
+                    self.logger.warning(f"Rate limit error detected. Retry {retries}/{max_retries} after {wait_time:.2f}s: {str(e)}")
+                    
+                    # For rate limit errors, assume we hit the limit and reset our counter
+                    global token_usage
+                    token_usage['tokens_used'] = TOKEN_LIMIT_PER_MINUTE
+                    await asyncio.sleep(wait_time)
+                elif retries < max_retries:
+                    # For other errors, still retry but with less delay
+                    wait_time = base_wait * (retries)
+                    self.logger.error(f"Error analyzing email (retry {retries}/{max_retries} after {wait_time:.2f}s): {str(e)}")
+                    await asyncio.sleep(wait_time)
+                else:
+                    self.logger.error(f"Failed to analyze email after {max_retries} retries: {str(e)}")
+                    return None
+        
+        return None
+
+    async def analyze_batch_with_rate_limiting(self, email_batch, timezone, chunk_size=3):
+        """Analyze a batch of emails with rate limiting.
+        
+        Args:
+            email_batch: List of email data dictionaries
+            timezone: Timezone for calendar events
+            chunk_size: Number of emails to process in each chunk
+            
+        Returns:
+            List of analysis results
+        """
+        analysis_results = []
+        
+        # Process emails in chunks to avoid overwhelming the LLM service
+        for i in range(0, len(email_batch), chunk_size):
+            chunk = email_batch[i:i + chunk_size]
+            self.logger.info(f"Processing chunk {i//chunk_size + 1} ({len(chunk)} emails)")
+            
+            # Use individual analysis with retry logic
+            chunk_results = []
+            for input_data in chunk:
+                result = await self.analyze_with_retry(input_data, timezone)
+                chunk_results.append(result)
+                
+                # Add a small delay between requests within the same chunk
+                # to spread out the token usage more evenly
+                if input_data != chunk[-1]:  # Don't wait after the last item
+                    await asyncio.sleep(0.5)
+            
+            # Wait between chunks to avoid exceeding rate limits
+            if i + chunk_size < len(email_batch):
+                # Estimated wait based on token usage
+                estimated_usage = sum(len(input_data.get('body', '')) // 4 for input_data in chunk)
+                wait_time = max(1, min(5, estimated_usage / TOKEN_LIMIT_PER_MINUTE * 60 * 0.1))
+                self.logger.info(f"Waiting {wait_time:.2f}s between chunks to avoid rate limits")
+                await asyncio.sleep(wait_time)
+                
+            analysis_results.extend(chunk_results)
+        
+        return analysis_results
