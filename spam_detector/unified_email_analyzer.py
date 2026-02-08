@@ -37,13 +37,6 @@ except Exception:  # pragma: no cover - fallback for standalone usage
 # Load environment variables
 load_dotenv()
 
-# Token rate limits and tracking (best-effort backoff for Gemini)
-TOKEN_LIMIT_PER_MINUTE = 6000
-_token_usage = {
-    'tokens_used': 0,
-    'reset_time': datetime.now(timezone.utc)
-}
-
 
 class EmailCategory(str, Enum):
     WORK = "WORK"
@@ -428,10 +421,8 @@ All datetime fields should be in ISO format with {timezone} timezone.
             # but usually we want to propagate communication errors to allow retries.
             raise
 
-    async def wait_for_rate_limit(self, tokens_used: Optional[int] = None) -> None:
-        """Wait if we're approaching rate limits (RPM or TPM)."""
-        global _token_usage
-        
+    async def wait_for_rate_limit(self) -> None:
+        """Wait if we're approaching rate limits (RPM)."""
         # RPM Limiting (Requests Per Minute)
         if not hasattr(self, '_request_timestamps'):
             self._request_timestamps = []
@@ -457,29 +448,6 @@ All datetime fields should be in ISO format with {timezone} timezone.
             
         # Record this request
         self._request_timestamps.append(datetime.now(timezone.utc))
-
-        # TPM Limiting (Tokens Per Minute) - Existing Logic
-        if (now - _token_usage['reset_time']).total_seconds() >= 60:
-            _token_usage = {'tokens_used': 0, 'reset_time': now}
-        
-        if tokens_used:
-            _token_usage['tokens_used'] += tokens_used
-
-        if _token_usage['tokens_used'] > TOKEN_LIMIT_PER_MINUTE * 0.8:
-            # Try to rotate key first for token limit too
-            if self.rotate_api_key():
-                 self.logger.info(f"Approaching token limit ({_token_usage['tokens_used']}/{TOKEN_LIMIT_PER_MINUTE}). Rotated API key to avoid wait.")
-                 _token_usage = {'tokens_used': 0, 'reset_time': datetime.now(timezone.utc)}
-            else:
-                seconds_until_reset = 60 - (now - _token_usage['reset_time']).total_seconds()
-                wait_time = max(1, seconds_until_reset)
-                self.logger.info(
-                    f"Approaching token limit ({_token_usage['tokens_used']}/{TOKEN_LIMIT_PER_MINUTE}). Waiting {wait_time:.2f}s")
-                await asyncio.sleep(wait_time)
-                _token_usage = {
-                    'tokens_used': 0,
-                    'reset_time': datetime.now(timezone.utc)
-                }
 
     async def analyze_with_retry(self, input_data: Dict[str, Any], timezone: str, max_retries: int = 3) -> Optional[Dict[str, Any]]:
         """Analyze an email with retry logic for transient errors."""
