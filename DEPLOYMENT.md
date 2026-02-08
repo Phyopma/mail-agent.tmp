@@ -6,7 +6,7 @@ This guide explains how to deploy the Mail Agent application in a production env
 
 - Python 3.8 or higher
 - Access to Gmail API credentials
-- (Optional) Access to a local LLM service (Ollama) or an OpenRouter API key
+- Gemini API access (GOOGLE_API_KEY)
 
 ## Installation
 
@@ -47,22 +47,91 @@ This guide explains how to deploy the Mail Agent application in a production env
 
 You can configure the application using environment variables:
 
-- `MAIL_AGENT_ANALYZER`: Type of analyzer to use (ollama, lmstudio, openrouter)
+- `MAIL_AGENT_GEMINI_MODEL`: Gemini model name (default: gemini-2.5-flash-lite)
+- `MAIL_AGENT_GEMINI_TEMPERATURE`: Gemini temperature (default: 0.1)
+- `MAIL_AGENT_GEMINI_MAX_OUTPUT_TOKENS`: Max output tokens (default: 2048)
+- `MAIL_AGENT_GEMINI_TIMEOUT`: Gemini request timeout in seconds (default: 60)
 - `MAIL_AGENT_TIMEZONE`: Default timezone for calendar events
 - `MAIL_AGENT_BATCH_SIZE`: Number of emails to process in a batch
 - `MAIL_AGENT_LOG_LEVEL`: Logging level (DEBUG, INFO, WARNING, ERROR, CRITICAL)
 - `MAIL_AGENT_ACCOUNTS_FILE`: Path to the accounts configuration file
 
-For OpenRouter or other APIs:
+Gemini requires:
 
-- `OPENROUTER_API_KEY`: Your OpenRouter API key
-- `GROQ_API_KEY`: Your Groq API key (if using Groq)
+- `GOOGLE_API_KEY`: Your Gemini API key
 
 ## Running the Application
 
 ### Manual Execution
 
 Run the application manually:
+
+## Cloud Run Job Deployment (Recommended)
+
+This app runs best as a scheduled Cloud Run Job. You must generate OAuth tokens locally
+before deploying (OAuth is interactive and cannot run in Cloud Run).
+
+### 1) Build and push the container
+```bash
+export PROJECT_ID=your-project-id
+export REGION=us-central1
+
+gcloud auth configure-docker "$REGION-docker.pkg.dev"
+gcloud artifacts repositories create mail-agent \
+  --repository-format=docker \
+  --location="$REGION"
+
+docker build -t "$REGION-docker.pkg.dev/$PROJECT_ID/mail-agent/mail-agent:latest" .
+docker push "$REGION-docker.pkg.dev/$PROJECT_ID/mail-agent/mail-agent:latest"
+```
+
+### 2) Create secrets
+```bash
+gcloud secrets create gmail-credentials --data-file=credentials/gmail_credentials.json
+gcloud secrets create gmail-token --data-file=credentials/gmail_token.pickle
+printf %s "$GOOGLE_API_KEY" | gcloud secrets create gemini-api-key --data-file=-
+```
+
+### 3) Deploy the job
+```bash
+export PROJECT_ID=your-project-id
+export REGION=us-central1
+export SCHEDULER_SA=service-account@your-project-id.iam.gserviceaccount.com
+
+./deploy.sh
+```
+
+Optional scheduler env vars:
+```bash
+export CREATE_SCHEDULER=true
+export SCHEDULER_JOB=mail-agent-hourly
+export SCHEDULE="0 * * * *"
+```
+
+### 4) Accounts config for Cloud Run
+Make sure your accounts file uses the secret mount paths:
+```json
+{
+  "accounts": [
+    {
+      "account_id": "primary",
+      "credentials_path": "/secrets/gmail_credentials.json",
+      "token_path": "/secrets/gmail_token.pickle",
+      "timezone": "America/Los_Angeles",
+      "email": "you@example.com"
+    }
+  ]
+}
+```
+
+### 5) Schedule with Cloud Scheduler (optional)
+```bash
+gcloud scheduler jobs create http mail-agent-hourly \
+  --schedule="0 * * * *" \
+  --uri="https://REGION-run.googleapis.com/apis/run.googleapis.com/v1/namespaces/PROJECT/jobs/mail-agent-job:run" \
+  --http-method=POST \
+  --oauth-service-account-email=SERVICE_ACCOUNT@PROJECT.iam.gserviceaccount.com
+```
 
 ## Troubleshooting
 

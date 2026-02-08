@@ -3,10 +3,11 @@
 This file is a concise guide for AI or human contributors working on this repository.
 
 ## Project Summary
-Mail Agent is a Python CLI that fetches Gmail messages, preprocesses content, runs LLM analysis for spam/category/priority and tool actions, tags emails in Gmail, and optionally creates Calendar/Tasks items.
+Mail Agent is a Python CLI that fetches Gmail messages, preprocesses content, runs Gemini-based LLM analysis for spam/category/priority and tool actions, tags emails in Gmail, and optionally creates Calendar/Tasks items. The runtime pipeline is orchestrated with LangGraph.
 
 ## Key Entry Points
 - CLI: `mail_agent/main.py`
+- LangGraph pipeline: `mail_agent/graph.py`
 - Unified LLM analyzer: `spam_detector/unified_email_analyzer.py`
 - Gmail fetcher: `email_fetcher/email_fetcher.py`
 - Google API setup: `email_fetcher/google_service_manager.py`
@@ -20,12 +21,12 @@ Mail Agent is a Python CLI that fetches Gmail messages, preprocesses content, ru
   - `config.json` (copy from `config.template.json`)
   - `accounts.json` (copy from `accounts.template.json`)
   - Gmail/Calendar credentials in `credentials/`
+  - `GOOGLE_API_KEY` for Gemini
 
 ## Run
 - `python -m mail_agent.main --process`
 - Optional flags:
   - `--accounts <path>`
-  - `--analyzer ollama|lmstudio|openrouter|groq`
   - `--batch-size <n>`
   - `--timezone <tz>`
 
@@ -36,15 +37,14 @@ Mail Agent is a Python CLI that fetches Gmail messages, preprocesses content, ru
 ## Operational Constraints
 - Gmail state is tracked via labels, not a database.
 - Tokens are stored as pickled files; treat credentials and tokens as sensitive.
-- The LLM integration uses OpenAI-compatible APIs and expects JSON outputs.
+- The LLM integration uses Gemini via LangChain and expects structured Pydantic outputs.
 
 ## Known Hotspots
-- `spam_detector/unified_email_analyzer.py` is the core integration point for changing LLM providers.
-- `mail_agent/main.py` contains batch/single processing logic and label application.
+- `mail_agent/graph.py` defines the LangGraph node flow.
+- `spam_detector/unified_email_analyzer.py` is the core Gemini integration.
 - `calendar_agent/calendar_agent.py` owns event/task creation and timezone handling.
 
 ## Contribution Guidelines
 - Keep changes isolated per module; avoid cross-module coupling unless necessary.
 - Prefer async-safe patterns for I/O calls (use `asyncio.to_thread` as in the codebase).
 - Update `architecture.md` if you change major flows or dependencies.
-

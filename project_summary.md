@@ -30,8 +30,8 @@
 
 1. **Fetch Emails:** Use Gmail/Outlook API to fetch unread emails hourly, excluding those tagged or moved to the processed folder.
 2. **Preprocess Emails:** Clean email content, remove HTML tags, and extract text.
-3. **Classify Emails:** Use Llama 3 8B locally to categorize and assign priority.
-4. **Extract Deadlines:** Detect deadlines using LLM and parse dates using `dateparser`.
+3. **Classify Emails:** Use Gemini to categorize and assign priority.
+4. **Extract Deadlines:** Detect deadlines using LLM and parse dates into ISO format.
 5. **Add to Calendar:** Create a calendar event if a deadline is detected.
 6. **Mark as Processed:** Tag the email or move it to the processed folder.
 7. **Logging & Error Handling:** Log errors and retry failed emails.
@@ -41,9 +41,8 @@
 ## **4. Technology Stack**
 
 - **Language:** Python
-- **LLM Framework:** LangChain, LangGraph
-- **Local LLM:** Llama 3 8B-instruct (quantized with GGUF)
-- **Quantization Tool:** `llama.cpp`
+- **LLM:** Gemini (via Google Generative AI)
+- **Framework:** LangChain, LangGraph
 - **Email APIs:** Gmail API, Microsoft Graph API
 - **Date Parsing:** `dateparser`, `parsedatetime`
 - **Calendar Integration:** Google Calendar API, Microsoft Graph API

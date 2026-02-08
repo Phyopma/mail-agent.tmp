@@ -15,11 +15,14 @@ load_dotenv()
 
 # Default configuration
 DEFAULT_CONFIG = {
-    "analyzer_type": "openrouter",  # Options: ollama, lmstudio, openrouter
     "timezone": "America/Los_Angeles",
     "batch_size": 0,
     "log_level": "INFO",
     "accounts_file": "accounts.json",
+    "gemini_model": "gemini-2.5-flash-lite",
+    "gemini_temperature": 0.1,
+    "gemini_max_output_tokens": 2048,
+    "gemini_timeout": 60,
     "labels": {
         "processed": "ProcessedByAgent",
         "spam": "Spam",
@@ -61,11 +64,14 @@ class ConfigManager:
         """Override configuration with environment variables."""
         # Map of env variable names to config keys
         env_map = {
-            "MAIL_AGENT_ANALYZER": "analyzer_type",
             "MAIL_AGENT_TIMEZONE": "timezone",
             "MAIL_AGENT_BATCH_SIZE": "batch_size",
             "MAIL_AGENT_LOG_LEVEL": "log_level",
             "MAIL_AGENT_ACCOUNTS_FILE": "accounts_file",
+            "MAIL_AGENT_GEMINI_MODEL": "gemini_model",
+            "MAIL_AGENT_GEMINI_TEMPERATURE": "gemini_temperature",
+            "MAIL_AGENT_GEMINI_MAX_OUTPUT_TOKENS": "gemini_max_output_tokens",
+            "MAIL_AGENT_GEMINI_TIMEOUT": "gemini_timeout",
         }
 
         for env_var, config_key in env_map.items():
@@ -76,6 +82,20 @@ class ConfigManager:
                         self.config[config_key] = int(os.environ[env_var])
                     except ValueError:
                         # Keep default if conversion fails
+                        pass
+                elif config_key in {"gemini_temperature"}:
+                    try:
+                        self.config[config_key] = float(os.environ[env_var])
+                    except ValueError:
+                    except ValueError:
+                        # Keep default if conversion fails
+                        pass
+                elif config_key in {"gemini_max_output_tokens", "gemini_timeout"}:
+                    try:
+                        self.config[config_key] = int(os.environ[env_var])
+                    except ValueError:
+                        # Keep default if conversion fails
+                        # Keep default if conversion fails for invalid numeric value
                         pass
                 else:
                     self.config[config_key] = os.environ[env_var]
