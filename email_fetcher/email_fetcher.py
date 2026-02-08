@@ -113,11 +113,26 @@ class EmailFetcher:
             return payload['body']['data']
 
         if 'parts' in payload:
-            for part in payload['parts']:
-                if part.get('mimeType') == 'text/plain' and part['body'].get('data'):
-                    return part['body']['data']
+            text_plain = self._find_part_by_mime(payload['parts'], 'text/plain')
+            if text_plain:
+                return text_plain
+
+            text_html = self._find_part_by_mime(payload['parts'], 'text/html')
+            if text_html:
+                return text_html
 
         return ""
+
+    def _find_part_by_mime(self, parts: List[Dict[str, Any]], mime_type: str) -> Optional[str]:
+        """Recursively find the first part matching a MIME type."""
+        for part in parts:
+            if part.get('mimeType') == mime_type and part.get('body', {}).get('data'):
+                return part['body']['data']
+            if part.get('parts'):
+                nested = self._find_part_by_mime(part['parts'], mime_type)
+                if nested:
+                    return nested
+        return None
 
     async def fetch_all_emails(self) -> List[Dict[str, Any]]:
         """Fetch all unprocessed emails.

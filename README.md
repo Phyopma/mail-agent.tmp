@@ -9,14 +9,15 @@ An intelligent email processing system that automatically categorizes emails, de
 - **Smart Actions**: Detects deadlines and creates calendar events
 - **Tagging**: Tags emails by category (Work, Personal, Spam, etc.)
 - **Multi-Account Support**: Process emails from multiple Gmail accounts
-- **Flexible LLM Backend**: Works with Ollama (local), LM Studio, or OpenRouter
+- **Gemini LLM Backend**: Uses Gemini via LangChain (Google GenAI)
+- **LangGraph Orchestration**: Structured, node-based pipeline with retries
 
 ## Requirements
 
 - Python 3.8+
 - Gmail API credentials
 - Calendar API credentials
-- LLM access (local or API-based)
+- Gemini API access (GOOGLE_API_KEY)
 
 ## Quick Start
 
@@ -40,21 +41,29 @@ An intelligent email processing system that automatically categorizes emails, de
    - Edit `accounts.json` with your Gmail account information
    - Place your Gmail API credentials in the `credentials` directory
 
-3. **Run the agent**:
+3. **Set Gemini API key**:
+   ```bash
+   export GOOGLE_API_KEY=your_api_key
+   ```
+
+4. **Run the agent**:
    ```bash
    mail_agent --process
    ```
 
 ## Configuration
 
-Mail Agent can be configured through `config.json` or environment variables:
+Mail Agent can be configured through `config.json` or environment variables. Gemini requires `GOOGLE_API_KEY`:
 
-| Config Key    | Environment Variable  | Description                                |
-| ------------- | --------------------- | ------------------------------------------ |
-| analyzer_type | MAIL_AGENT_ANALYZER   | LLM backend (ollama, lmstudio, openrouter) |
-| timezone      | MAIL_AGENT_TIMEZONE   | Default timezone for calendar events       |
-| batch_size    | MAIL_AGENT_BATCH_SIZE | Number of emails to process at once        |
-| log_level     | MAIL_AGENT_LOG_LEVEL  | Logging level (DEBUG, INFO, etc.)          |
+| Config Key                | Environment Variable                  | Description                                     |
+| ------------------------- | ------------------------------------- | ----------------------------------------------- |
+| gemini_model              | MAIL_AGENT_GEMINI_MODEL               | Gemini model name (default: gemini-2.5-flash-lite) |
+| gemini_temperature        | MAIL_AGENT_GEMINI_TEMPERATURE         | Gemini temperature (default: 0.1)               |
+| gemini_max_output_tokens  | MAIL_AGENT_GEMINI_MAX_OUTPUT_TOKENS   | Max output tokens (default: 2048)               |
+| gemini_timeout            | MAIL_AGENT_GEMINI_TIMEOUT             | Gemini request timeout in seconds (default: 60) |
+| timezone                  | MAIL_AGENT_TIMEZONE                   | Default timezone for calendar events            |
+| batch_size                | MAIL_AGENT_BATCH_SIZE                 | Number of emails to process at once             |
+| log_level                 | MAIL_AGENT_LOG_LEVEL                  | Logging level (DEBUG, INFO, etc.)               |
 
 ## Deployment
 

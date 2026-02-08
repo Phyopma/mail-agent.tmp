@@ -1,0 +1,40 @@
+apiVersion: run.googleapis.com/v1
+kind: Job
+metadata:
+  name: mail-agent-cleanup
+  labels:
+    app: mail-agent
+spec:
+  template:
+    spec:
+      template:
+        spec:
+          containers:
+            - image: REGION-docker.pkg.dev/PROJECT/mail-agent/mail-agent:latest
+              command: ["python", "cleanup_data.py"]
+              env:
+                - name: GOOGLE_API_KEY
+                  valueFrom:
+                    secretKeyRef:
+                      name: gemini-api-key
+                      key: latest
+              volumeMounts:
+                - name: gmail-credentials
+                  mountPath: /app/credentials/gmail_credentials.json
+                  readOnly: true
+                - name: gmail-token
+                  mountPath: /app/credentials/gmail_token.pickle
+                  readOnly: true
+                - name: uci-token
+                  mountPath: /app/credentials/uci_token.pickle
+                  readOnly: true
+          volumes:
+            - name: gmail-credentials
+              secret:
+                secretName: gmail-credentials
+            - name: gmail-token
+              secret:
+                secretName: gmail-token
+            - name: uci-token
+              secret:
+                secretName: uci-token

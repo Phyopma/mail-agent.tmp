@@ -23,9 +23,55 @@ class GoogleServiceManager:
         'https://www.googleapis.com/auth/calendar.events',
         'https://www.googleapis.com/auth/tasks'
     ]
+    
+    # Cloud Run secret mount path mappings
+    # Maps local paths to Cloud Run secret mount paths
+    CLOUD_RUN_PATH_MAP = {
+        'credentials/gmail_credentials.json': '/app/secrets/gmail-creds/gmail_credentials.json',
+        'credentials/gmail_token.pickle': '/app/secrets/gmail-token/gmail_token.pickle',
+        'credentials/uci_token.pickle': '/app/secrets/uci-token/uci_token.pickle',
+    }
 
     def __init__(self):
         self.services = {}
+    
+    def _resolve_path(self, path: str) -> str:
+        """Resolve a credential path with fallbacks for Cloud Run.
+        
+        Checks paths in order:
+        1. The path as-is (for local development)
+        2. Cloud Run secret mount path mapping
+        3. Absolute path variations
+        
+        Args:
+            path: Original credential path from config
+            
+        Returns:
+            Resolved path that exists, or original path if none found
+        """
+        # First, try the path as-is
+        if os.path.exists(path):
+            return path
+        
+        # Try Cloud Run secret mount path mapping
+        if path in self.CLOUD_RUN_PATH_MAP:
+            cloud_path = self.CLOUD_RUN_PATH_MAP[path]
+            if os.path.exists(cloud_path):
+                return cloud_path
+        
+        # Try with /app prefix (Cloud Run workdir)
+        app_path = f"/app/{path}"
+        if os.path.exists(app_path):
+            return app_path
+        
+        # Check the Cloud Run path map for basename matches
+        basename = os.path.basename(path)
+        for local_path, cloud_path in self.CLOUD_RUN_PATH_MAP.items():
+            if os.path.basename(cloud_path) == basename and os.path.exists(cloud_path):
+                return cloud_path
+        
+        # Return original path (will fail with helpful error message)
+        return path
 
     async def setup_services(self, credentials_path: str, token_path: str, account_id: str = 'default') -> Dict[str, Any]:
         """Setup Google API services for Gmail, Calendar, and Tasks.
@@ -39,8 +85,12 @@ class GoogleServiceManager:
             Dictionary containing initialized service clients
         """
         try:
+            # Resolve paths for Cloud Run environment
+            resolved_credentials_path = self._resolve_path(credentials_path)
+            resolved_token_path = self._resolve_path(token_path)
+            
             # Get credentials
-            creds = await self._get_credentials(credentials_path, token_path)
+            creds = await self._get_credentials(resolved_credentials_path, resolved_token_path)
 
             # Initialize services
             if account_id not in self.services:

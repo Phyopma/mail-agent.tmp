@@ -1,46 +1,47 @@
 """Unified Email Analyzer module.
 
-This module provides a unified interface for analyzing emails using different LLM backends.
-It includes rate limiting and token tracking functionality to handle API rate limits.
+This module provides a unified interface for analyzing emails using Gemini via
+LangChain's ChatGoogleGenerativeAI and structured Pydantic outputs.
 """
 
-import os
-import json
-import logging
-import re
 import asyncio
+import os
 import random
-import time
-from datetime import datetime, UTC, timedelta
-from typing import Dict, Any, List, Optional, Union, Tuple
-from enum import Enum, auto
-from pydantic import BaseModel, Field
-from dotenv import load_dotenv
-from openai import OpenAI
+from datetime import datetime, timezone
+from enum import Enum
+from typing import Any, Dict, List, Optional
 
-# Import the application's logger
+from dotenv import load_dotenv
+from langchain_core.messages import HumanMessage, SystemMessage
+from langchain_google_genai import ChatGoogleGenerativeAI
+from pydantic import BaseModel, Field
+
 try:
+    from mail_agent.config import config
     from mail_agent.logger import get_logger
+
     logger = get_logger(__name__)
-except ImportError:
-    # Fallback to basic logging if used as standalone module
+except Exception:  # pragma: no cover - fallback for standalone usage
     import logging
+
     logger = logging.getLogger(__name__)
     if not logger.handlers:
         handler = logging.StreamHandler()
-        formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+        formatter = logging.Formatter(
+            '%(asctime)s - %(name)s - %(levelname)s - %(message)s')
         handler.setFormatter(formatter)
         logger.addHandler(handler)
         logger.setLevel(logging.INFO)
+    config = None
 
 # Load environment variables
 load_dotenv()
 
-# Token rate limits and tracking
+# Token rate limits and tracking (best-effort backoff for Gemini)
 TOKEN_LIMIT_PER_MINUTE = 6000
-token_usage = {
+_token_usage = {
     'tokens_used': 0,
-    'reset_time': datetime.now(UTC)
+    'reset_time': datetime.now(timezone.utc)
 }
 
 
@@ -79,35 +80,29 @@ class ToolAction(str, Enum):
 
 class CalendarEvent(BaseModel):
     title: str = Field(description="Title of the calendar event")
-    start_time: str = Field(
-        description="Start time of the event in ISO format")
-    end_time: Optional[str] = Field(
-        description="End time of the event in ISO format")
+    start_time: str = Field(description="Start time of the event in ISO format")
+    end_time: Optional[str] = Field(description="End time of the event in ISO format")
     description: Optional[str] = Field(description="Description of the event")
-    attendees: Optional[List[str]] = Field(
-        description="List of attendee email addresses")
+    attendees: Optional[List[str]] = Field(description="List of attendee email addresses")
 
 
 class Reminder(BaseModel):
     title: str = Field(description="Title of the reminder")
     due_date: str = Field(description="Due date in ISO format")
     priority: str = Field(description="Priority level (high, medium, low)")
-    description: Optional[str] = Field(
-        description="Description of the reminder")
+    description: Optional[str] = Field(description="Description of the reminder")
 
 
 class Task(BaseModel):
     title: str = Field(description="Title of the task")
     due_date: Optional[str] = Field(description="Due date in ISO format")
-    priority: Optional[str] = Field(
-        description="Priority level (high, medium, low)")
+    priority: Optional[str] = Field(description="Priority level (high, medium, low)")
     description: Optional[str] = Field(description="Description of the task")
-    assignees: Optional[List[str]] = Field(
-        description="List of assignee email addresses")
+    assignees: Optional[List[str]] = Field(description="List of assignee email addresses")
 
 
 class EmailAnalysisResult(BaseModel):
-    """Structured output for email analysis following OpenAI guidelines."""
+    """Structured output for email analysis following strict schema."""
     is_spam: Spam = Field(
         description="Classifies the email as SPAM or NOT_SPAM based on comprehensive analysis")
     category: EmailCategory = Field(
@@ -127,40 +122,48 @@ class EmailAnalysisResult(BaseModel):
 
 
 class UnifiedEmailAnalyzer:
-    """Unified interface for analyzing emails using different backends."""
+    """Unified interface for analyzing emails using Gemini via LangChain."""
 
-    def __init__(self, analyzer_type=None, backend="groq", max_concurrent_requests: int = 3):
-        """Initialize the analyzer with the specified backend type.
+    def __init__(
+        self,
+        model: Optional[str] = None,
+        temperature: Optional[float] = None,
+        max_output_tokens: Optional[int] = None,
+        timeout: Optional[int] = None,
+        max_concurrent_requests: int = 3,
+    ) -> None:
+        default_model = "gemini-2.5-flash-lite"
+        default_temp = 0.1
+        default_max_tokens = 2048
+        default_timeout = 60
 
-        Args:
-            analyzer_type: Legacy parameter name for backend type
-            backend: Type of backend to use
-            max_concurrent_requests: Maximum number of concurrent requests
-        """
-        # For backward compatibility, accept both analyzer_type and backend
-        self.backend_type = backend or analyzer_type or os.environ.get(
-            "MAIL_AGENT_ANALYZER", "groq")
+        self.model_name = model or os.environ.get("MAIL_AGENT_GEMINI_MODEL") or (
+            config.get("gemini_model") if config else default_model
+        )
+        self.temperature = temperature if temperature is not None else (
+            config.get("gemini_temperature", default_temp) if config else default_temp
+        )
+        self.max_output_tokens = max_output_tokens if max_output_tokens is not None else (
+            config.get("gemini_max_output_tokens", default_max_tokens) if config else default_max_tokens
+        )
+        self.timeout = timeout if timeout is not None else (
+            config.get("gemini_timeout", default_timeout) if config else default_timeout
+        )
 
         self.logger = logger
         self.logger.info(
-            f"Initializing UnifiedEmailAnalyzer with backend: {self.backend_type}")
+            f"Initializing UnifiedEmailAnalyzer with Gemini model: {self.model_name}")
+
         self.semaphore = asyncio.Semaphore(max_concurrent_requests)
-
-        # Initialize the appropriate backend
-        if self.backend_type == "openrouter":
-            self._initialize_openrouter()
-        elif self.backend_type == "ollama":
-            self._initialize_ollama()
-        elif self.backend_type == "lmstudio":
-            self._initialize_lmstudio()
-        elif self.backend_type == "groq":
-            self._initialize_groq()
-        else:
-            self.logger.warning(
-                f"Unknown backend type: {self.backend_type}. Falling back to OpenRouter.")
-            self._initialize_openrouter()
-
-        # Setup the system prompt
+        
+        # API Key Management
+        self.api_keys = self._load_api_keys()
+        self.current_key_index = 0
+        
+        self.llm = self._build_model()
+        self.structured_llm = self.llm.with_structured_output(EmailAnalysisResult)
+        
+        # System prompt for email analysis
         self.system_prompt = """
         You are an expert email analyzer specializing in spam detection, categorization, priority assessment, and tool detection.
         Your task is to analyze emails holistically and provide accurate, structured analysis based on comprehensive criteria.
@@ -303,148 +306,81 @@ class UnifiedEmailAnalyzer:
            - Use the provided timezone for all datetime conversions
            - Format all datetime fields in ISO format with timezone offset
            - Consider daylight saving time when applicable
-        Your response must be a single valid serializable JSON object that strictly follows this structure (no additional fields or explanations outside the JSON):
-        { "is_spam": "SPAM or NOT_SPAM",
-          "category": "WORK or PERSONAL or FAMILY or SOCIAL or MARKETING or SCHOOL or NEWSLETTER or SHOPPING",
-          "priority": "CRITICAL or URGENT or HIGH or NORMAL or LOW or IGNORE",
-          "required_tools": ["calendar", "reminder", "task", "none"],
-          "calendar_event": null or {
-            "title": "string",
-            "start_time": "ISO datetime string",
-            "end_time": "ISO datetime string or null",
-            "description": "string or null",
-            "attendees": ["email addresses"] or null
-          },
-          "reminder": null or {
-            "title": "string",
-            "due_date": "ISO datetime string",
-            "priority": "high/medium/low",
-            "description": "string or null"
-          },
-          "task": null or {
-            "title": "string",
-            "due_date": "ISO datetime string or null",
-            "priority": "high/medium/low or null",
-            "description": "string or null",
-            "assignees": ["email addresses"] or null
-          },
-          "reasoning": "string explaining your analysis and tool recommendations"
+        Return a response that matches the EmailAnalysisResult schema exactly.
+        """
+
+    def _load_api_keys(self) -> List[str]:
+        """Load API keys from environment variable, supporting comma-separated list."""
+        api_key_str = os.environ.get("GOOGLE_API_KEY", "")
+        if not api_key_str:
+            self.logger.warning("No GOOGLE_API_KEY found in environment")
+            return []
+            
+        keys = [k.strip() for k in api_key_str.split(",") if k.strip()]
+        # Always log how many keys were loaded
+        self.logger.info(f"Loaded {len(keys)} API key(s) for rotation (rotation {'enabled' if len(keys) > 1 else 'disabled - need 2+ keys'})")
+        return keys
+
+    def rotate_api_key(self) -> bool:
+        """Rotate to the next API key. Returns True if rotated, False if no keys or single key."""
+        if not self.api_keys or len(self.api_keys) <= 1:
+            self.logger.debug(f"Cannot rotate: only {len(self.api_keys) if self.api_keys else 0} key(s) available")
+            return False
+            
+        old_index = self.current_key_index
+        self.current_key_index = (self.current_key_index + 1) % len(self.api_keys)
+        self.logger.warning(f"Rotating API key from index {old_index + 1} to {self.current_key_index + 1}/{len(self.api_keys)}")
+        
+        # Rebuild models with new key
+        self.llm = self._build_model()
+        self.structured_llm = self.llm.with_structured_output(EmailAnalysisResult)
+        return True
+
+    def _build_model(self) -> ChatGoogleGenerativeAI:
+        """Build the Gemini chat model with best-effort parameter support."""
+        base_kwargs = {
+            "model": self.model_name,
+            "temperature": self.temperature,
         }
-        Make sure the values for is_spam, category, priority, and required_tools strictly match the expected enum values.
-        Do not add any explanations or text outside of this serializable JSON structure.
-        """
+        
+        # Explicitly pass the current API key if we have managed keys
+        if self.api_keys:
+            base_kwargs["google_api_key"] = self.api_keys[self.current_key_index]
 
-    def _initialize_openrouter(self):
-        """Initialize OpenRouter backend."""
-        self.logger.info("Initializing OpenRouter backend")
-        self.openrouter_api_key = os.environ.get("OPENROUTER_API_KEY")
-        if not self.openrouter_api_key:
-            self.logger.error(
-                "OpenRouter API key not found. Please set OPENROUTER_API_KEY environment variable.")
-        else:
-            self.logger.info("OpenRouter API key found")
-            try:
-                import openai
-                self.client = openai.OpenAI(
-                    base_url="https://openrouter.ai/api/v1",
-                    api_key=self.openrouter_api_key,
-                )
-                self.model_name = "deepseek/deepseek-r1-distill-llama-70b:free"
-            except ImportError:
-                self.logger.error(
-                    "OpenAI package not installed. Please install with 'pip install openai'.")
-            except Exception as e:
-                self.logger.error(
-                    f"Error initializing OpenRouter client: {str(e)}")
-
-    def _initialize_ollama(self):
-        """Initialize Ollama backend."""
-        self.logger.info("Initializing Ollama backend")
-
+        # Try provider-native max_output_tokens with timeout
         try:
-            import openai
-            self.client = openai.OpenAI(
-                base_url="http://localhost:11434/v1",
-                api_key="not-needed",
+            return ChatGoogleGenerativeAI(
+                **base_kwargs,
+                max_output_tokens=self.max_output_tokens,
+                timeout=self.timeout,
             )
-            self.model_name = "llama3:latest"
-        except ImportError:
-            self.logger.error(
-                "OpenAI package not installed. Please install with 'pip install openai'.")
-        except Exception as e:
-            self.logger.error(
-                f"Error initializing Ollama client: {str(e)}")
+        except TypeError:
+            pass
 
-    def _initialize_lmstudio(self):
-        """Initialize LM Studio backend."""
-        self.logger.info("Initializing LM Studio backend")
-        self.lmstudio_url = os.environ.get(
-            "LMSTUDIO_URL", "http://localhost:1234/v1")
-        self.logger.info(f"Using LM Studio URL: {self.lmstudio_url}")
+        # Retry without timeout
         try:
-            import openai
-            self.client = openai.OpenAI(
-                base_url=self.lmstudio_url,
-                api_key="not-needed",
+            return ChatGoogleGenerativeAI(
+                **base_kwargs,
+                max_output_tokens=self.max_output_tokens,
             )
-            self.model_name = "meta-llama-3.1-8b-instruct"
-        except ImportError:
-            self.logger.error(
-                "OpenAI package not installed. Please install with 'pip install openai'.")
-        except Exception as e:
-            self.logger.error(f"Error initializing LM Studio client: {str(e)}")
+        except TypeError:
+            pass
 
-    def _initialize_groq(self):
-        """Initialize Groq backend."""
-        self.logger.info("Initializing Groq backend")
-        self.groq_api_key = os.environ.get("GROQ_API_KEY")
-        if not self.groq_api_key:
-            self.logger.error(
-                "Groq API key not found. Please set GROQ_API_KEY environment variable.")
-        else:
-            try:
-                import openai
-                self.client = openai.OpenAI(
-                    base_url="https://api.groq.com/openai/v1",
-                    api_key=self.groq_api_key,
-                )
-                self.model_name = "deepseek-r1-distill-llama-70b"
-            except ImportError:
-                self.logger.error(
-                    "OpenAI package not installed. Please install with 'pip install openai'.")
-            except Exception as e:
-                self.logger.error(f"Error initializing Groq client: {str(e)}")
-
-    def _clean_json_response(self, response_text: str) -> str:
-        """Clean the response text to extract valid JSON.
-
-        Args:
-            response_text: Raw response text from the model
-
-        Returns:
-            Cleaned JSON string
-        """
-        # Handle case where JSON is wrapped in markdown code blocks with or without language specifier
-        if "```" in response_text:
-            # Extract content between triple backticks
-            pattern = r"```(?:json)?(.*?)```"
-            matches = re.findall(pattern, response_text, re.DOTALL)
-            if matches:
-                # Take the first JSON block found
-                return matches[0].strip()
-
-        # If no code blocks or extraction failed, try to find JSON object directly
-        # Look for content that starts with { and ends with }
-        pattern = r"\{.*\}"
-        matches = re.findall(pattern, response_text, re.DOTALL)
-        if matches:
-            return matches[0].strip()
-
-        # If all parsing attempts fail, return the original text
-        return response_text
+        # Fallback to max_tokens with timeout
+        try:
+            return ChatGoogleGenerativeAI(
+                **base_kwargs,
+                max_tokens=self.max_output_tokens,
+                timeout=self.timeout,
+            )
+        except TypeError:
+            return ChatGoogleGenerativeAI(
+                **base_kwargs,
+                max_tokens=self.max_output_tokens,
+            )
 
     async def analyze_email(self, email_data: Dict[str, Any], timezone: str = "UTC") -> Optional[Dict[str, Any]]:
-        """Analyze an email using the configured LLM backend.
+        """Analyze an email using Gemini with structured output.
 
         Args:
             email_data: Email data dictionary with 'from', 'subject', 'body'
@@ -452,13 +388,14 @@ class UnifiedEmailAnalyzer:
 
         Returns:
             Dictionary with analysis results or None if analysis failed
-            Results include token_usage data when available
         """
+        # Apply rate limiting before making the request
+        await self.wait_for_rate_limit()
+
         self.logger.info(
             f"Analyzing email from {email_data.get('from', 'Unknown')} with subject: {email_data.get('subject', 'No subject')}")
 
-        # Prepare the analysis prompt
-        analysis_prompt = f"""Analyze this email and provide a structured analysis as a valid JSON object that strictly follows the EmailAnalysisResult schema:
+        analysis_prompt = f"""Analyze this email and provide a structured analysis based on the EmailAnalysisResult schema.
 
 From: {email_data.get('from', '')}
 Subject: {email_data.get('subject', '')}
@@ -467,285 +404,130 @@ Body: {email_data.get('body', '')}
 
 Note: Use the received date as reference point for any relative time expressions like 'tomorrow', 'next week', etc.
 All datetime fields should be in ISO format with {timezone} timezone.
+"""
 
-Your response must be a valid serializable JSON object with ONLY these fields (no explanations outside the JSON):
-- is_spam: Must be exactly "SPAM" or "NOT_SPAM"
-- category: Must be exactly one of: "WORK", "PERSONAL", "FAMILY", "SOCIAL", "MARKETING", "SCHOOL", "NEWSLETTER", "SHOPPING"
-- priority: Must be exactly one of: "CRITICAL", "URGENT", "HIGH", "NORMAL", "LOW", "IGNORE"
-- required_tools: Array containing only valid tool actions: "calendar", "reminder", "task", "none"
-- calendar_event: Null or object with title, start_time, end_time, description, attendees
-- reminder: Null or object with title, due_date, priority, description
-- task: Null or object with title, due_date, priority, description, assignees
-- reasoning: String explaining your analysis and recommendations
-
-Ensure all values match the expected types and formats. Return only serializable JSON object with no additional explanations."""
+        messages = [
+            SystemMessage(content=self.system_prompt),
+            HumanMessage(content=analysis_prompt),
+        ]
 
         try:
-            # Create messages for OpenAI API
-            messages = [
-                {"role": "system", "content": self.system_prompt},
-                {"role": "user", "content": analysis_prompt}
-            ]
-
-            # Create a synchronous function to call the API
-            def call_api():
-                try:
-                    return self.client.chat.completions.create(
-                        model=self.model_name,
-                        messages=messages,
-                        temperature=0.1,
-                        response_format={"type": "json_object"}
-                    )
-                except Exception as e:
-                    self.logger.error(
-                        f"API call error: {type(e).__name__}: {str(e)}")
-                    return None
-
-            # Use asyncio to run the API call
             async with self.semaphore:
-                response = await asyncio.to_thread(call_api)
-
-            # Check if response was successful
-            if response is None:
-                self.logger.error(
-                    f"API call returned None for email: {email_data.get('subject', '')}")
-                return None
-
-            self.logger.info(
-                f"API call successful for email: {email_data.get('subject', '')}")
-
-            # Extract token usage from response if available
-            token_usage = None
-            if hasattr(response, 'usage'):
-                token_usage = {
-                    'prompt_tokens': response.usage.prompt_tokens,
-                    'completion_tokens': response.usage.completion_tokens,
-                    'total_tokens': response.usage.total_tokens
-                }
-                self.logger.info(f"API token usage: {token_usage}")
-
-            # Check if response has the expected structure
-            if not hasattr(response, 'choices') or not response.choices:
-                self.logger.error(f"Response has no choices: {response}")
-                return None
-
-            response_content = response.choices[0].message.content
-            self.logger.debug(
-                f"Response content length: {len(response_content) if response_content else 0}")
-
-            # Clean and parse the JSON response
-            cleaned_json_str = self._clean_json_response(response_content)
-            self.logger.debug(
-                f"Cleaned JSON length: {len(cleaned_json_str) if cleaned_json_str else 0}")
-
-            # Parse the JSON with error handling
-            try:
-                result_json = json.loads(cleaned_json_str)
-                # Create a structured result object
-                result = EmailAnalysisResult(**result_json)
-
-                self.logger.info(
-                    f"Successfully parsed result for email: {email_data.get('subject', '')}")
-                result_dict = {
-                    'is_spam': result.is_spam,
-                    'category': result.category,
-                    'priority': result.priority,
-                    'required_tools': result.required_tools,
-                    'calendar_event': result.calendar_event,
-                    'reminder': result.reminder,
-                    'task': result.task,
-                    'reasoning': result.reasoning
-                }
-                
-                # Include token usage in result if available
-                if token_usage:
-                    result_dict['token_usage'] = token_usage
-                
-                return result_dict
-            except json.JSONDecodeError as json_err:
-                self.logger.error(f"JSON parsing error: {json_err}")
-                self.logger.error(
-                    f"Problematic JSON: {cleaned_json_str[:100]}...")
-                return None
-            except Exception as parse_err:
-                self.logger.error(
-                    f"Error parsing result: {type(parse_err).__name__}: {str(parse_err)}")
-                return None
-        except Exception as e:
-            self.logger.exception(f"Error analyzing email: {str(e)}")
-            return None
-
-    async def analyze_email_batch(self, email_data_list: List[Dict[str, Any]], timezone: str = "America/Los_Angeles", batch_size: int = 2) -> List[Optional[Dict[str, Any]]]:
-        """Analyze multiple emails concurrently.
-
-        Args:
-            email_data_list: List of dictionaries containing email information
-            timezone: Timezone for date/time conversions
-            batch_size: Number of emails to process in a batch
-
-        Returns:
-            List of dictionaries containing analysis results
-        """
-        results = []
-
-        # Split the list into smaller batches
-        for i in range(0, len(email_data_list), batch_size):
-            batch = email_data_list[i:i+batch_size]
-            self.logger.info(
-                f"Processing batch {i//batch_size + 1} with {len(batch)} emails...")
-
-            # Process this batch concurrently
-            batch_tasks = [self.analyze_email(
-                email_data, timezone) for email_data in batch]
-            batch_results = await asyncio.gather(*batch_tasks, return_exceptions=True)
-
-            # Handle exceptions and add results to the main list
-            for j, result in enumerate(batch_results):
-                if isinstance(result, Exception):
-                    self.logger.error(
-                        f"Error processing email in batch: {str(result)}")
-                    results.append(None)
+                if hasattr(self.structured_llm, "ainvoke"):
+                    result = await self.structured_llm.ainvoke(messages)
                 else:
-                    results.append(result)
+                    result = await asyncio.to_thread(self.structured_llm.invoke, messages)
 
-        return results
+            if not result:
+                self.logger.error("Structured output returned None")
+                return None
 
-    async def wait_for_rate_limit(self, tokens_used=None):
-        """Wait if we're approaching rate limits.
+            return result.model_dump()
+        except Exception as e:
+            # Let the retry logic handle specific exclusions if needed, 
+            # but usually we want to propagate communication errors to allow retries.
+            raise e
+
+    async def wait_for_rate_limit(self, tokens_used: Optional[int] = None) -> None:
+        """Wait if we're approaching rate limits (RPM or TPM)."""
+        global _token_usage
         
-        Args:
-            tokens_used: Actual tokens used in the last request (if available)
-        """
-        global token_usage
+        # RPM Limiting (Requests Per Minute)
+        if not hasattr(self, '_request_timestamps'):
+            self._request_timestamps = []
+            
+        now = datetime.now(timezone.utc)
+        # Remove timestamps older than 60 seconds
+        self._request_timestamps = [t for t in self._request_timestamps if (now - t).total_seconds() < 60]
         
-        now = datetime.now(UTC)
+        # If we have >= 12 requests in the last minute (conservative limit for 15 RPM)
+        if len(self._request_timestamps) >= 12:
+            # Try to rotate key first
+            if self.rotate_api_key():
+                self.logger.info("Approaching RPM limit (12/15). Rotated API key to avoid wait.")
+                # Reset local request counter for the new key (simplistic assumption: new key has fresh quota)
+                self._request_timestamps = []
+            else:
+                # If cannot rotate, then wait
+                oldest_request = self._request_timestamps[0]
+                wait_time = 60 - (now - oldest_request).total_seconds() + 1 # +1 buffer
+                wait_time = max(1, wait_time)
+                self.logger.info(f"Approaching RPM limit ({len(self._request_timestamps)}/15). Waiting {wait_time:.2f}s")
+                await asyncio.sleep(wait_time)
+            
+        # Record this request
+        self._request_timestamps.append(datetime.now(timezone.utc))
+
+        # TPM Limiting (Tokens Per Minute) - Existing Logic
+        if (now - _token_usage['reset_time']).total_seconds() >= 60:
+            _token_usage = {'tokens_used': 0, 'reset_time': now}
         
-        # Reset token count if a minute has passed
-        if (now - token_usage['reset_time']).total_seconds() >= 60:
-            token_usage = {
-                'tokens_used': 0,
-                'reset_time': now
-            }
-            self.logger.debug("Token usage counter reset")
-            return
-        
-        # If we have actual token usage, update our counter
         if tokens_used:
-            token_usage['tokens_used'] += tokens_used
-            self.logger.debug(f"Token usage updated to {token_usage['tokens_used']}/{TOKEN_LIMIT_PER_MINUTE}")
-        
-        # Check if we would exceed the limit
-        if token_usage['tokens_used'] > TOKEN_LIMIT_PER_MINUTE * 0.8:  # 80% of limit as safety margin
-            # Calculate how long to wait before the next token reset
-            seconds_until_reset = 60 - (now - token_usage['reset_time']).total_seconds()
-            wait_time = max(1, seconds_until_reset)
-            
-            self.logger.info(f"Approaching token limit ({token_usage['tokens_used']}/{TOKEN_LIMIT_PER_MINUTE}). Waiting {wait_time:.2f} seconds")
-            await asyncio.sleep(wait_time)
-            
-            # Reset counter
-            token_usage = {
-                'tokens_used': 0,
-                'reset_time': datetime.now(UTC)
-            }
+            _token_usage['tokens_used'] += tokens_used
 
-    async def analyze_with_retry(self, input_data, timezone, max_retries=3):
-        """Analyze an email with retry logic for rate limiting.
-        
-        Args:
-            input_data: Email data to analyze
-            timezone: Timezone for calendar events
-            max_retries: Maximum number of retry attempts
-        
-        Returns:
-            Analysis result or None if all retries fail
-        """
+        if _token_usage['tokens_used'] > TOKEN_LIMIT_PER_MINUTE * 0.8:
+            # Try to rotate key first for token limit too
+            if self.rotate_api_key():
+                 self.logger.info(f"Approaching token limit ({_token_usage['tokens_used']}/{TOKEN_LIMIT_PER_MINUTE}). Rotated API key to avoid wait.")
+                 _token_usage = {'tokens_used': 0, 'reset_time': datetime.now(timezone.utc)}
+            else:
+                seconds_until_reset = 60 - (now - _token_usage['reset_time']).total_seconds()
+                wait_time = max(1, seconds_until_reset)
+                self.logger.info(
+                    f"Approaching token limit ({_token_usage['tokens_used']}/{TOKEN_LIMIT_PER_MINUTE}). Waiting {wait_time:.2f}s")
+                await asyncio.sleep(wait_time)
+                _token_usage = {
+                    'tokens_used': 0,
+                    'reset_time': datetime.now(timezone.utc)
+                }
+
+    async def analyze_with_retry(self, input_data: Dict[str, Any], timezone: str, max_retries: int = 3) -> Optional[Dict[str, Any]]:
+        """Analyze an email with retry logic for transient errors."""
         retries = 0
-        base_wait = 2  # Base wait time in seconds
-        
+        base_wait = 2
+
         while retries <= max_retries:
             try:
-                # Attempt to analyze the email
                 result = await self.analyze_email(input_data, timezone)
-                
-                if result:
-                    # Extract actual token usage from API response if available
-                    if 'token_usage' in result:
-                        token_usage_data = result['token_usage']
-                        total_tokens = token_usage_data.get('total_tokens', 0)
-                        self.logger.info(f"API reported token usage: {total_tokens} tokens")
-                        
-                        # Update the rate limiting counter with actual token count
-                        await self.wait_for_rate_limit(total_tokens)
-                    else:
-                        # Fallback to estimation if token usage not available
-                        estimated_tokens = len(input_data['body']) // 4
-                        await self.wait_for_rate_limit(estimated_tokens)
-                        self.logger.debug(f"No token usage reported by API, using estimate: {estimated_tokens}")
-                
                 return result
-                
             except Exception as e:
                 error_msg = str(e).lower()
                 retries += 1
                 
-                # Check if this is likely a rate limit error
-                if any(term in error_msg for term in ['rate limit', 'too many requests', 'quota', 'capacity']):
-                    wait_time = base_wait * (2 ** (retries - 1)) * (0.5 + random.random())  # Exponential backoff with jitter
-                    self.logger.warning(f"Rate limit error detected. Retry {retries}/{max_retries} after {wait_time:.2f}s: {str(e)}")
-                    
-                    # For rate limit errors, assume we hit the limit and reset our counter
-                    global token_usage
-                    token_usage['tokens_used'] = TOKEN_LIMIT_PER_MINUTE
+                # Check for Quota/Rate Limit Exceeded
+                if any(term in error_msg for term in ['rate limit', 'too many requests', 'quota', 'capacity', 'resource_exhausted', '429']):
+                    # Try to rotate key first
+                    if self.rotate_api_key():
+                        self.logger.info(f"Rate limit hit. Switched API key and retrying immediately.")
+                        continue # Retry immediately with new key
+                        
+                    # The API usually asks for ~10s wait. We'll wait 20s to be safe and let the bucket refill.
+                    wait_time = 20 + (random.random() * 5)
+                    self.logger.warning(
+                        f"Rate limit hit ({type(e).__name__}). Retry {retries}/{max_retries} after {wait_time:.2f}s")
                     await asyncio.sleep(wait_time)
+                
                 elif retries < max_retries:
-                    # For other errors, still retry but with less delay
-                    wait_time = base_wait * (retries)
-                    self.logger.error(f"Error analyzing email (retry {retries}/{max_retries} after {wait_time:.2f}s): {str(e)}")
+                    wait_time = base_wait * (2 ** (retries - 1))
+                    self.logger.error(
+                        f"Error analyzing email (retry {retries}/{max_retries} after {wait_time:.2f}s): {str(e)}")
                     await asyncio.sleep(wait_time)
                 else:
-                    self.logger.error(f"Failed to analyze email after {max_retries} retries: {str(e)}")
+                    self.logger.error(
+                        f"Failed to analyze email after {max_retries} retries: {str(e)}")
                     return None
-        
+
         return None
 
-    async def analyze_batch_with_rate_limiting(self, email_batch, timezone, chunk_size=3):
-        """Analyze a batch of emails with rate limiting.
-        
-        Args:
-            email_batch: List of email data dictionaries
-            timezone: Timezone for calendar events
-            chunk_size: Number of emails to process in each chunk
-            
-        Returns:
-            List of analysis results
-        """
-        analysis_results = []
-        
-        # Process emails in chunks to avoid overwhelming the LLM service
+    async def analyze_batch_with_rate_limiting(self, email_batch: List[Dict[str, Any]], timezone: str, chunk_size: int = 3) -> List[Optional[Dict[str, Any]]]:
+        """Analyze a batch of emails with simple chunking."""
+        results: List[Optional[Dict[str, Any]]] = []
         for i in range(0, len(email_batch), chunk_size):
             chunk = email_batch[i:i + chunk_size]
-            self.logger.info(f"Processing chunk {i//chunk_size + 1} ({len(chunk)} emails)")
-            
-            # Use individual analysis with retry logic
             chunk_results = []
             for input_data in chunk:
-                result = await self.analyze_with_retry(input_data, timezone)
-                chunk_results.append(result)
-                
-                # Add a small delay between requests within the same chunk
-                # to spread out the token usage more evenly
-                if input_data != chunk[-1]:  # Don't wait after the last item
+                chunk_results.append(await self.analyze_with_retry(input_data, timezone))
+                if input_data != chunk[-1]:
                     await asyncio.sleep(0.5)
-            
-            # Wait between chunks to avoid exceeding rate limits
-            if i + chunk_size < len(email_batch):
-                # Estimated wait based on token usage
-                estimated_usage = sum(len(input_data.get('body', '')) // 4 for input_data in chunk)
-                wait_time = max(1, min(5, estimated_usage / TOKEN_LIMIT_PER_MINUTE * 60 * 0.1))
-                self.logger.info(f"Waiting {wait_time:.2f}s between chunks to avoid rate limits")
-                await asyncio.sleep(wait_time)
-                
-            analysis_results.extend(chunk_results)
-        
-        return analysis_results
+            results.extend(chunk_results)
+        return results

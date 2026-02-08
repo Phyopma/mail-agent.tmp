@@ -1,9 +1,12 @@
 {
-  "analyzer_type": "openrouter",
   "timezone": "America/Los_Angeles",
   "batch_size": 5,
   "log_level": "INFO",
   "accounts_file": "accounts.json",
+  "gemini_model": "gemini-2.5-flash-lite",
+  "gemini_temperature": 0.1,
+  "gemini_max_output_tokens": 2048,
+  "gemini_timeout": 60,
   "labels": {
     "processed": "ProcessedByAgent",
     "spam": "Spam",

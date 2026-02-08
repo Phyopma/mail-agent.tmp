@@ -73,53 +73,6 @@ class CalendarAgent:
         except Exception as e:
             return {'status': 'error', 'error': str(e)}
 
-    async def create_task(self, task_details: Dict[str, Any], account_id: str = 'default') -> Dict[str, Any]:
-        """Create a task using Google Tasks API.
-
-        Args:
-            task_details: Dictionary containing task details
-            account_id: Identifier for the Google account
-
-        Returns:
-            Dictionary containing the created task details or error information
-        """
-        try:
-            service = self.tasks_services.get(account_id)
-            if not service:
-                return {'status': 'error', 'error': f'Tasks service not found for account {account_id}'}
-
-            # Get the default task list
-            tasklist = await asyncio.to_thread(
-                service.tasklists().list().execute
-            )
-            tasklist_id = tasklist['items'][0]['id']
-
-            # Prepare task data
-            task = {
-                'title': task_details['title'],
-                'notes': task_details.get('description', '')
-            }
-
-            if task_details.get('due_date'):
-                task['due'] = task_details['due_date']
-
-            # Create the task
-            result = await asyncio.to_thread(
-                service.tasks().insert(
-                    tasklist=tasklist_id,
-                    body=task
-                ).execute
-            )
-
-            return {
-                'status': 'success',
-                'task_id': result['id'],
-                'self_link': result['selfLink']
-            }
-
-        except Exception as e:
-            return {'status': 'error', 'error': str(e)}
-
     async def create_reminder(self, title: str, due_date: str, priority: Optional[str] = None, description: Optional[str] = None, account_id: str = 'default') -> Dict[str, Any]:
         """Create a reminder using Google Calendar API.
 

@@ -20,7 +20,7 @@ import json
 import argparse
 import asyncio
 import traceback
-from datetime import datetime, timedelta
+from datetime import datetime
 from pathlib import Path
 import dotenv
 
@@ -73,24 +73,15 @@ async def check_credentials():
 async def check_llm_backend():
     """Check if the LLM backend is responding."""
     try:
-        analyzer_type = config.get("analyzer_type")
-        logger.info(f"Testing LLM backend: {analyzer_type}")
+        model_name = config.get("gemini_model")
+        logger.info(f"Testing Gemini model: {model_name}")
 
-        # Check API keys in environment
-        if analyzer_type == "openrouter":
-            api_key = os.environ.get("OPENROUTER_API_KEY")
-            if not api_key:
-                return False, "OpenRouter API key not found in environment variables"
-            logger.info("OpenRouter API key found in environment")
-        elif analyzer_type == "groq":
-            api_key = os.environ.get("GROQ_API_KEY")
-            if not api_key:
-                return False, "Groq API key not found in environment variables"
-            logger.info("Groq API key found in environment")
-            logger.info(api_key)
+        api_key = os.environ.get("GOOGLE_API_KEY")
+        if not api_key:
+            return False, "GOOGLE_API_KEY not found in environment variables"
+        logger.info("GOOGLE_API_KEY found in environment")
 
-        # Initialize analyzer with explicit backend parameter
-        analyzer = UnifiedEmailAnalyzer(backend=analyzer_type)
+        analyzer = UnifiedEmailAnalyzer()
 
         # Simple test query
         test_data = {
@@ -100,7 +91,7 @@ async def check_llm_backend():
             'received_date': datetime.now().isoformat()
         }
 
-        logger.info(f"Sending test request to {analyzer_type}")
+        logger.info(f"Sending test request to {model_name}")
 
         # Use a timeout to prevent long hangs
         try:
@@ -109,15 +100,15 @@ async def check_llm_backend():
                 timeout=30  # 30 second timeout
             )
         except asyncio.TimeoutError:
-            return False, f"LLM backend '{analyzer_type}' timed out after 30 seconds"
+            return False, f"Gemini model '{model_name}' timed out after 30 seconds"
 
         if result is None:
-            logger.error(f"LLM backend '{analyzer_type}' returned None")
-            return False, f"LLM backend '{analyzer_type}' failed to respond"
+            logger.error(f"Gemini model '{model_name}' returned None")
+            return False, f"Gemini model '{model_name}' failed to respond"
 
         logger.info(
             f"LLM backend responded with: {json.dumps(result, default=str)[:100]}...")
-        return True, f"LLM backend '{analyzer_type}' is responding properly"
+        return True, f"Gemini model '{model_name}' is responding properly"
     except Exception as e:
         error_trace = traceback.format_exc()
         logger.error(f"LLM backend check error: {error_trace}")
@@ -132,15 +123,10 @@ async def check_configuration():
             f"Checking configuration: {json.dumps(all_config, indent=2)}")
 
         # Check required keys
-        required_keys = ["analyzer_type", "timezone", "accounts_file"]
+        required_keys = ["timezone", "accounts_file", "gemini_model"]
         for key in required_keys:
             if key not in all_config:
                 return False, f"Missing required configuration key: {key}"
-
-        # Validate analyzer_type
-        valid_analyzers = ["ollama", "lmstudio", "openrouter", "groq"]
-        if all_config["analyzer_type"] not in valid_analyzers:
-            return False, f"Invalid analyzer_type: {all_config['analyzer_type']}"
 
         # Check if accounts file exists
         accounts_file = Path(all_config["accounts_file"])

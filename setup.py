@@ -6,14 +6,16 @@ setup(
     packages=['mail_agent', 'email_fetcher', 'email_preprocessor',
               'email_tagger', 'calendar_agent', 'spam_detector'],
     install_requires=[
-        'pydantic>=2.0.0',
-        'asyncio>=3.4.3',
         'google-auth-oauthlib>=1.0.0',
         'google-auth-httplib2>=0.1.0',
         'google-api-python-client>=2.0.0',
+        'langchain==1.2.7',
+        'langchain-core==1.2.8',
+        'langchain-google-genai==4.2.0',
+        'langgraph==1.0.7',
+        'pydantic>=2.0.0',
         'python-dateutil>=2.8.2',
-        'openai',
-        'dotenv',
+        'python-dotenv>=1.0.0',
         'bs4'
     ],
     entry_points={
