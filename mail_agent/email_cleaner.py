@@ -4,7 +4,7 @@ This module handles automatic email deletion based on retention policies.
 It runs as a separate scheduled job to enforce cleanup rules.
 """
 
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 from typing import Dict, Any, List, Set, Optional
 import asyncio
 from email_fetcher import EmailFetcher
