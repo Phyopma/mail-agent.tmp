@@ -87,11 +87,13 @@ class ConfigManager:
                     try:
                         self.config[config_key] = float(os.environ[env_var])
                     except ValueError:
+                        # Keep default if conversion fails for invalid temperature
                         pass
                 elif config_key in {"gemini_max_output_tokens", "gemini_timeout"}:
                     try:
                         self.config[config_key] = int(os.environ[env_var])
                     except ValueError:
+                        # Keep default if conversion fails for invalid numeric value
                         pass
                 else:
                     self.config[config_key] = os.environ[env_var]
