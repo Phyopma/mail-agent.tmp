@@ -426,7 +426,7 @@ All datetime fields should be in ISO format with {timezone} timezone.
         except Exception as e:
             # Let the retry logic handle specific exclusions if needed, 
             # but usually we want to propagate communication errors to allow retries.
-            raise e
+            raise
 
     async def wait_for_rate_limit(self, tokens_used: Optional[int] = None) -> None:
         """Wait if we're approaching rate limits (RPM or TPM)."""
