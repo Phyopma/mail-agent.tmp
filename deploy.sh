@@ -60,10 +60,12 @@ else
   exit 1
 fi
 
+UCI_TOKEN_EXISTS=false
 if [[ -f credentials/uci_token.pickle ]]; then
   echo "Updating uci-token..."
   gcloud secrets describe uci-token || gcloud secrets create uci-token
   gcloud secrets versions add uci-token --data-file=credentials/uci_token.pickle
+  UCI_TOKEN_EXISTS=true
 else
   echo "Warning: credentials/uci_token.pickle not found but might be needed."
 fi
@@ -102,8 +104,16 @@ gcloud projects add-iam-policy-binding "$PROJECT_ID" \
 # Configure secrets with separate directories (Cloud Run limitation workaround)
 echo "Configuring secrets for main job..."
 gcloud run jobs update "$JOB_NAME" --region "$REGION" --clear-secrets
+
+# Build secrets list conditionally
+SECRETS_LIST="/app/secrets/gmail-creds/gmail_credentials.json=gmail-credentials:latest,/app/secrets/gmail-token/gmail_token.pickle=gmail-token:latest"
+if [[ "$UCI_TOKEN_EXISTS" == "true" ]]; then
+  SECRETS_LIST="$SECRETS_LIST,/app/secrets/uci-token/uci_token.pickle=uci-token:latest"
+fi
+SECRETS_LIST="$SECRETS_LIST,GOOGLE_API_KEY=gemini-api-key:latest"
+
 gcloud run jobs update "$JOB_NAME" --region "$REGION" \
-  --set-secrets="/app/secrets/gmail-creds/gmail_credentials.json=gmail-credentials:latest,/app/secrets/gmail-token/gmail_token.pickle=gmail-token:latest,/app/secrets/uci-token/uci_token.pickle=uci-token:latest,GOOGLE_API_KEY=gemini-api-key:latest"
+  --set-secrets="$SECRETS_LIST"
 echo "Deployed Cloud Run Job: $JOB_NAME"
 
 # Deploy Cleanup Job
@@ -121,8 +131,16 @@ fi
 # Configure secrets for cleanup job with separate directories
 echo "Configuring secrets for cleanup job..."
 gcloud run jobs update "$CLEANUP_JOB_NAME" --region "$REGION" --clear-secrets
+
+# Build secrets list conditionally
+CLEANUP_SECRETS_LIST="/app/secrets/gmail-creds/gmail_credentials.json=gmail-credentials:latest,/app/secrets/gmail-token/gmail_token.pickle=gmail-token:latest"
+if [[ "$UCI_TOKEN_EXISTS" == "true" ]]; then
+  CLEANUP_SECRETS_LIST="$CLEANUP_SECRETS_LIST,/app/secrets/uci-token/uci_token.pickle=uci-token:latest"
+fi
+CLEANUP_SECRETS_LIST="$CLEANUP_SECRETS_LIST,GOOGLE_API_KEY=gemini-api-key:latest"
+
 gcloud run jobs update "$CLEANUP_JOB_NAME" --region "$REGION" \
-  --set-secrets="/app/secrets/gmail-creds/gmail_credentials.json=gmail-credentials:latest,/app/secrets/gmail-token/gmail_token.pickle=gmail-token:latest,/app/secrets/uci-token/uci_token.pickle=uci-token:latest,GOOGLE_API_KEY=gemini-api-key:latest"
+  --set-secrets="$CLEANUP_SECRETS_LIST"
 echo "Deployed Cloud Run Job: $CLEANUP_JOB_NAME"
 
 # Configure Schedulers
