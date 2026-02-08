@@ -127,8 +127,18 @@ def build_graph(
         if not analysis:
             return {}
 
-        priority = str(analysis.get("priority", "")).upper()
-        category = str(analysis.get("category", "")).upper()
+        def _normalize_enum_like(value: Any) -> str:
+            # Handle Enum-like objects (e.g., EmailPriority, EmailCategory) and plain strings
+            if hasattr(value, "value"):
+                value = value.value  # type: ignore[attr-defined]
+            text = str(value)
+            # If the string looks like "EnumClass.MEMBER", keep only "MEMBER"
+            if "." in text:
+                text = text.split(".")[-1]
+            return text.upper()
+
+        priority = _normalize_enum_like(analysis.get("priority", ""))
+        category = _normalize_enum_like(analysis.get("category", ""))
         high_priority_levels = {"CRITICAL", "URGENT", "HIGH"}
         important_categories = {"WORK", "PERSONAL", "SCHOOL"}
 
