@@ -19,7 +19,7 @@ class EmailCleaner:
 
     # Protected categories that get longer retention
     PROTECTED_CATEGORIES: Set[str] = {"Work", "Personal", "School"}
-    SPAM_LABEL = "Spam"
+    SPAM_LABEL = "SPAM"
 
     # Retention rules: (priority, category_condition, max_age_days)
     # category_condition: None = any, "protected" = in PROTECTED_CATEGORIES, "unprotected" = not in
@@ -88,6 +88,11 @@ class EmailCleaner:
         if not category:
             return False
         return category.title() in self.PROTECTED_CATEGORIES
+
+    def _has_spam_label(self, labels: List[str]) -> bool:
+        """Check whether labels contain Gmail spam label, case-insensitively."""
+        normalized = {str(label).upper() for label in labels}
+        return self.SPAM_LABEL.upper() in normalized
 
     def _should_delete(
         self, priority: Optional[str], category: Optional[str], email_age_days: float
@@ -290,7 +295,7 @@ class EmailCleaner:
                 labels = email.get("labels", [])
 
                 # Optional failsafe: remove any spam-labeled email immediately.
-                if config.get("cleanup_spam_failsafe", True) and self.SPAM_LABEL in labels:
+                if config.get("cleanup_spam_failsafe", True) and self._has_spam_label(labels):
                     success = await self.delete_email(account_id, email["id"], dry_run)
                     if success:
                         self.deleted_count += 1
