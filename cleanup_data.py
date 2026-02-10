@@ -50,7 +50,7 @@ async def main(dry_run: bool = False):
     fetcher = EmailFetcher()
     
     for account in accounts:
-        account_id = account.get("id", "default")
+        account_id = account.get("account_id", account.get("id", "default"))
         credentials_path = account.get("credentials_path", "credentials/gmail_credentials.json")
         token_path = account.get("token_path", "credentials/gmail_token.pickle")
         

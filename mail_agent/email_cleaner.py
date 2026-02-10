@@ -8,6 +8,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Dict, Any, List, Set, Optional
 import asyncio
 from email_fetcher import EmailFetcher
+from mail_agent.config import config
 from mail_agent.logger import get_logger
 
 logger = get_logger(__name__)
@@ -18,6 +19,7 @@ class EmailCleaner:
 
     # Protected categories that get longer retention
     PROTECTED_CATEGORIES: Set[str] = {"Work", "Personal", "School"}
+    SPAM_LABEL = "Spam"
 
     # Retention rules: (priority, category_condition, max_age_days)
     # category_condition: None = any, "protected" = in PROTECTED_CATEGORIES, "unprotected" = not in
@@ -273,6 +275,14 @@ class EmailCleaner:
             for email in emails:
                 # Parse labels
                 labels = email.get("labels", [])
+
+                # Optional failsafe: remove any spam-labeled email immediately.
+                if config.get("cleanup_spam_failsafe", True) and self.SPAM_LABEL in labels:
+                    success = await self.delete_email(account_id, email["id"], dry_run)
+                    if success:
+                        self.deleted_count += 1
+                    continue
+
                 priority = self._parse_priority_from_labels(labels)
                 category = self._parse_category_from_labels(labels)
                 

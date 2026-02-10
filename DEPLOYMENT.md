@@ -109,14 +109,15 @@ export SCHEDULE="0 * * * *"
 ```
 
 ### 4) Accounts config for Cloud Run
-Make sure your accounts file uses the secret mount paths:
+`deploy.sh` mounts secrets under `/app/secrets/*` and the app resolves those paths
+automatically, so accounts can keep the same relative paths used locally:
 ```json
 {
   "accounts": [
     {
       "account_id": "primary",
-      "credentials_path": "/secrets/gmail_credentials.json",
-      "token_path": "/secrets/gmail_token.pickle",
+      "credentials_path": "credentials/gmail_credentials.json",
+      "token_path": "credentials/gmail_token.pickle",
       "timezone": "America/Los_Angeles",
       "email": "you@example.com"
     }

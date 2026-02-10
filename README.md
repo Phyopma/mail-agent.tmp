@@ -61,6 +61,12 @@ Mail Agent can be configured through `config.json` or environment variables. Gem
 | gemini_temperature        | MAIL_AGENT_GEMINI_TEMPERATURE         | Gemini temperature (default: 0.1)               |
 | gemini_max_output_tokens  | MAIL_AGENT_GEMINI_MAX_OUTPUT_TOKENS   | Max output tokens (default: 2048)               |
 | gemini_timeout            | MAIL_AGENT_GEMINI_TIMEOUT             | Gemini request timeout in seconds (default: 60) |
+| enable_multimodal_fallback | MAIL_AGENT_ENABLE_MULTIMODAL_FALLBACK | Enable image/PDF-aware fallback when text body is weak |
+| enforce_both_labels       | MAIL_AGENT_ENFORCE_BOTH_LABELS        | Require both category and priority labels before marking processed |
+| spam_disposition          | MAIL_AGENT_SPAM_DISPOSITION           | Spam handling mode (`trash` or `none`)          |
+| cleanup_spam_failsafe     | MAIL_AGENT_CLEANUP_SPAM_FAILSAFE      | Cleaner job deletes residual spam-labeled mail  |
+| multimodal_max_attachments | MAIL_AGENT_MULTIMODAL_MAX_ATTACHMENTS | Max attachments sent to multimodal classifier     |
+| multimodal_max_attachment_bytes | MAIL_AGENT_MULTIMODAL_MAX_ATTACHMENT_BYTES | Max bytes per attachment for multimodal fallback |
 | timezone                  | MAIL_AGENT_TIMEZONE                   | Default timezone for calendar events            |
 | batch_size                | MAIL_AGENT_BATCH_SIZE                 | Number of emails to process at once             |
 | log_level                 | MAIL_AGENT_LOG_LEVEL                  | Logging level (DEBUG, INFO, etc.)               |

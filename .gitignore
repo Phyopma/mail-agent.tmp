@@ -63,3 +63,5 @@ accounts.json
 **/__pycache__
 
 logs/
+
+credentials/*

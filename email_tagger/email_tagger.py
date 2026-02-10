@@ -6,6 +6,9 @@ for email priority and category classification.
 
 from typing import Dict, Any, Optional, List
 from enum import Enum
+import logging
+
+logger = logging.getLogger(__name__)
 
 
 class EmailTag(str, Enum):
@@ -57,41 +60,71 @@ class EmailTagger:
             Updated email data with tags
         """
         try:
+            tagged = email_data.copy()
             # Initialize tags list if not present
-            if 'tags' not in email_data:
-                email_data['tags'] = []
+            if 'tags' not in tagged:
+                tagged['tags'] = []
 
             # Extract priority and category from analysis
             priority = analysis_result.get('priority')
             category = analysis_result.get('category')
+            is_spam = str(analysis_result.get('is_spam', '')).upper()
+
+            # Spam messages are handled by a dedicated branch in the graph.
+            if is_spam == "SPAM":
+                tagged['tagging_status'] = 'success'
+                return tagged
+
+            missing_fields = []
+            if not priority:
+                missing_fields.append("priority")
+            if not category:
+                missing_fields.append("category")
+            if missing_fields:
+                tagged['tagging_status'] = 'error'
+                tagged['error_message'] = (
+                    f"Missing required classification fields: {', '.join(missing_fields)}"
+                )
+                return tagged
 
             # Add priority tag if available
             if priority:
                 priority_value = self._normalize_enum_value(priority)
                 priority_tag = f"{self.priority_prefix}{priority_value}"
-                if priority_tag not in email_data['tags']:
-                    email_data['tags'].append(priority_tag)
-                    print(f"Added priority tag: {priority_tag}")  # Debug log
+                if priority_tag not in tagged['tags']:
+                    tagged['tags'].append(priority_tag)
+                    logger.debug(f"Added priority tag: {priority_tag}")
 
             # Add category tag if available
             if category:
                 category_value = self._normalize_enum_value(category)
                 category_tag = f"{self.category_prefix}{category_value}"
-                if category_tag not in email_data['tags']:
-                    email_data['tags'].append(category_tag)
-                    print(f"Added category tag: {category_tag}")  # Debug log
+                if category_tag not in tagged['tags']:
+                    tagged['tags'].append(category_tag)
+                    logger.debug(f"Added category tag: {category_tag}")
+
+            # Enforce complete tagging for non-spam emails.
+            expected_tags = {f"{self.priority_prefix}{self._normalize_enum_value(priority)}",
+                             f"{self.category_prefix}{self._normalize_enum_value(category)}"}
+            present_tags = set(tagged.get("tags", []))
+            if not expected_tags.issubset(present_tags):
+                tagged['tagging_status'] = 'error'
+                tagged['error_message'] = (
+                    f"Tagging incomplete. Expected tags: {sorted(expected_tags)}"
+                )
+                return tagged
 
             # Add tagging status
-            email_data['tagging_status'] = 'success'
+            tagged['tagging_status'] = 'success'
 
-            return email_data
+            return tagged
 
         except Exception as e:
             # Handle tagging errors
             error_data = email_data.copy()
             error_data['tagging_status'] = 'error'
             error_data['error_message'] = str(e)
-            print(f"Tagging error: {str(e)}")  # Debug log
+            logger.error(f"Tagging error: {str(e)}")
             return error_data
 
     async def tag_email_batch(self, email_data_list: List[Dict[str, Any]],

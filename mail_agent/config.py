@@ -23,6 +23,12 @@ DEFAULT_CONFIG = {
     "gemini_temperature": 0.1,
     "gemini_max_output_tokens": 2048,
     "gemini_timeout": 60,
+    "enable_multimodal_fallback": True,
+    "enforce_both_labels": True,
+    "spam_disposition": "trash",
+    "cleanup_spam_failsafe": True,
+    "multimodal_max_attachments": 3,
+    "multimodal_max_attachment_bytes": 2000000,
     "labels": {
         "processed": "ProcessedByAgent",
         "spam": "Spam",
@@ -72,6 +78,12 @@ class ConfigManager:
             "MAIL_AGENT_GEMINI_TEMPERATURE": "gemini_temperature",
             "MAIL_AGENT_GEMINI_MAX_OUTPUT_TOKENS": "gemini_max_output_tokens",
             "MAIL_AGENT_GEMINI_TIMEOUT": "gemini_timeout",
+            "MAIL_AGENT_ENABLE_MULTIMODAL_FALLBACK": "enable_multimodal_fallback",
+            "MAIL_AGENT_ENFORCE_BOTH_LABELS": "enforce_both_labels",
+            "MAIL_AGENT_SPAM_DISPOSITION": "spam_disposition",
+            "MAIL_AGENT_CLEANUP_SPAM_FAILSAFE": "cleanup_spam_failsafe",
+            "MAIL_AGENT_MULTIMODAL_MAX_ATTACHMENTS": "multimodal_max_attachments",
+            "MAIL_AGENT_MULTIMODAL_MAX_ATTACHMENT_BYTES": "multimodal_max_attachment_bytes",
         }
 
         for env_var, config_key in env_map.items():
@@ -88,11 +100,27 @@ class ConfigManager:
                         self.config[config_key] = float(os.environ[env_var])
                     except ValueError:
                         pass
-                elif config_key in {"gemini_max_output_tokens", "gemini_timeout"}:
+                elif config_key in {
+                    "gemini_max_output_tokens",
+                    "gemini_timeout",
+                    "multimodal_max_attachments",
+                    "multimodal_max_attachment_bytes",
+                }:
                     try:
                         self.config[config_key] = int(os.environ[env_var])
                     except ValueError:
                         pass
+                elif config_key in {
+                    "enable_multimodal_fallback",
+                    "enforce_both_labels",
+                    "cleanup_spam_failsafe",
+                }:
+                    self.config[config_key] = os.environ[env_var].lower() in {
+                        "1",
+                        "true",
+                        "yes",
+                        "on",
+                    }
                 else:
                     self.config[config_key] = os.environ[env_var]
 
