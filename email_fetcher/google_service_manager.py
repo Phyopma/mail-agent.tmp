@@ -170,7 +170,6 @@ class GoogleServiceManager:
                 service.users().labels().list(userId='me').execute
             )
             existing_label_items = existing_labels.get('labels', [])
-            existing_label_names = [label['name'] for label in existing_label_items]
             existing_by_name_lower = {
                 label.get('name', '').lower(): label for label in existing_label_items
             }
