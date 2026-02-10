@@ -146,10 +146,23 @@ class EmailCleaner:
         query = "label:ProcessedByAgent"
         
         try:
-            results = await asyncio.to_thread(
-                gmail_service.users().messages().list(userId="me", q=query, maxResults=500).execute
-            )
-            messages = results.get("messages", [])
+            messages: List[Dict[str, Any]] = []
+            next_page_token: Optional[str] = None
+
+            while True:
+                list_call = gmail_service.users().messages().list(
+                    userId="me",
+                    q=query,
+                    maxResults=500,
+                    pageToken=next_page_token,
+                )
+                results = await asyncio.to_thread(list_call.execute)
+                messages.extend(results.get("messages", []))
+
+                next_page_token = results.get("nextPageToken")
+                if not next_page_token:
+                    break
+
             total = len(messages)
             logger.info(f"Found {total} processed emails for account {account_id}")
             
