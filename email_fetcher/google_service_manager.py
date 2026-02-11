@@ -169,8 +169,10 @@ class GoogleServiceManager:
             existing_labels = await asyncio.to_thread(
                 service.users().labels().list(userId='me').execute
             )
-            existing_label_names = [label['name']
-                                    for label in existing_labels.get('labels', [])]
+            existing_label_items = existing_labels.get('labels', [])
+            existing_by_name_lower = {
+                label.get('name', '').lower(): label for label in existing_label_items
+            }
 
             # Define required labels with their configurations
             required_labels = {
@@ -253,10 +255,23 @@ class GoogleServiceManager:
                 }
             }
 
-            # Create missing labels and store all label IDs
             label_ids = {}
+            # Gmail system label is SPAM; map it as "Spam" to avoid invalid create attempts.
+            spam_label = existing_by_name_lower.get("spam")
+            if spam_label:
+                label_ids["Spam"] = spam_label["id"]
+            else:
+                print("Warning: Gmail system label 'SPAM' not found; spam mapping unavailable")
+
+            # Create missing labels and store IDs for all required labels.
             for label_name, label_config in required_labels.items():
-                if label_name not in existing_label_names:
+                existing_label = existing_by_name_lower.get(label_name.lower())
+                if existing_label:
+                    label_ids[label_name] = existing_label['id']
+                    print(f"'{label_name}' label already exists")
+                    continue
+
+                try:
                     created_label = await asyncio.to_thread(
                         service.users().labels().create(
                             userId='me',
@@ -265,14 +280,8 @@ class GoogleServiceManager:
                     )
                     label_ids[label_name] = created_label['id']
                     print(f"Created '{label_name}' label")
-                else:
-                    # Get ID of existing label
-                    existing_label = next(
-                        label for label in existing_labels.get('labels', [])
-                        if label['name'] == label_name
-                    )
-                    label_ids[label_name] = existing_label['id']
-                    print(f"'{label_name}' label already exists")
+                except Exception as create_error:
+                    print(f"Error creating label '{label_name}': {create_error}")
 
             print(f"Stored {len(label_ids)} label IDs for account {account_id}")
             return label_ids

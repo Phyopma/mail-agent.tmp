@@ -37,6 +37,13 @@ except Exception:  # pragma: no cover - fallback for standalone usage
 # Load environment variables
 load_dotenv()
 
+# Token rate limits and tracking (best-effort backoff for Gemini)
+TOKEN_LIMIT_PER_MINUTE = 6000
+_token_usage = {
+    'tokens_used': 0,
+    'reset_time': datetime.now(timezone.utc)
+}
+
 
 class EmailCategory(str, Enum):
     WORK = "WORK"
@@ -142,6 +149,12 @@ class UnifiedEmailAnalyzer:
         self.timeout = timeout if timeout is not None else (
             config.get("gemini_timeout", default_timeout) if config else default_timeout
         )
+        self.enable_multimodal_fallback = bool(
+            config.get("enable_multimodal_fallback", True) if config else True
+        )
+        self.multimodal_max_attachments = int(
+            config.get("multimodal_max_attachments", 3) if config else 3
+        )
 
         self.logger = logger
         self.logger.info(
@@ -154,7 +167,7 @@ class UnifiedEmailAnalyzer:
         self.current_key_index = 0
         
         self.llm = self._build_model()
-        self.structured_llm = self.llm.with_structured_output(EmailAnalysisResult)
+        self.structured_llm = self._build_structured_model()
         
         # System prompt for email analysis
         self.system_prompt = """
@@ -326,8 +339,16 @@ class UnifiedEmailAnalyzer:
         
         # Rebuild models with new key
         self.llm = self._build_model()
-        self.structured_llm = self.llm.with_structured_output(EmailAnalysisResult)
+        self.structured_llm = self._build_structured_model()
         return True
+
+    def _build_structured_model(self):
+        """Build structured output runnable with provider-native JSON schema support."""
+        return self.llm.with_structured_output(
+            EmailAnalysisResult,
+            method="json_schema",
+            include_raw=True,
+        )
 
     def _build_model(self) -> ChatGoogleGenerativeAI:
         """Build the Gemini chat model with best-effort parameter support."""
@@ -372,57 +393,308 @@ class UnifiedEmailAnalyzer:
                 max_tokens=self.max_output_tokens,
             )
 
-    async def analyze_email(self, email_data: Dict[str, Any], timezone: str = "UTC") -> Optional[Dict[str, Any]]:
-        """Analyze an email using Gemini with structured output.
+    @staticmethod
+    def _enum_to_str(value: Any, upper: bool = False) -> str:
+        """Normalize enum-like values to plain strings."""
+        if value is None:
+            return ""
+        normalized = str(value)
+        if "." in normalized:
+            normalized = normalized.split(".")[-1]
+        return normalized.upper() if upper else normalized
 
-        Args:
-            email_data: Email data dictionary with 'from', 'subject', 'body'
-            timezone: Timezone to use for datetime parsing
+    def _normalize_analysis_result(self, result: Dict[str, Any]) -> Dict[str, Any]:
+        """Normalize structured output into a stable dict contract."""
+        normalized = dict(result)
+        normalized["is_spam"] = self._enum_to_str(
+            normalized.get("is_spam"), upper=True
+        )
+        normalized["category"] = self._enum_to_str(
+            normalized.get("category"), upper=True
+        )
+        normalized["priority"] = self._enum_to_str(
+            normalized.get("priority"), upper=True
+        )
 
-        Returns:
-            Dictionary with analysis results or None if analysis failed
-        """
-        # Apply rate limiting before making the request
-        await self.wait_for_rate_limit()
+        required_tools = normalized.get("required_tools")
+        if isinstance(required_tools, list):
+            tool_values = [
+                self._enum_to_str(tool, upper=False).lower()
+                for tool in required_tools
+                if self._enum_to_str(tool, upper=False).lower() != "none"
+            ]
+            # Preserve ordering while removing duplicates.
+            normalized["required_tools"] = list(dict.fromkeys(tool_values))
+        else:
+            normalized["required_tools"] = []
 
-        self.logger.info(
-            f"Analyzing email from {email_data.get('from', 'Unknown')} with subject: {email_data.get('subject', 'No subject')}")
+        for detail_field in ("calendar_event", "reminder", "task"):
+            detail_value = normalized.get(detail_field)
+            if hasattr(detail_value, "model_dump"):
+                normalized[detail_field] = detail_value.model_dump()
 
-        analysis_prompt = f"""Analyze this email and provide a structured analysis based on the EmailAnalysisResult schema.
+        reasoning = normalized.get("reasoning")
+        normalized["reasoning"] = str(reasoning or "").strip()
+        return normalized
+
+    def _is_classification_complete(self, result: Dict[str, Any]) -> bool:
+        """Return True only when spam/category/priority are valid enum values."""
+        valid_spam = {item.value for item in Spam}
+        valid_categories = {item.value for item in EmailCategory}
+        valid_priorities = {item.value for item in EmailPriority}
+
+        return (
+            result.get("is_spam") in valid_spam
+            and result.get("category") in valid_categories
+            and result.get("priority") in valid_priorities
+        )
+
+    def _finalize_analysis_result(
+        self, result: Dict[str, Any], classification_source: str
+    ) -> Dict[str, Any]:
+        """Finalize result with operational metadata required by the pipeline."""
+        normalized = self._normalize_analysis_result(result)
+        normalized["classification_source"] = classification_source
+        normalized["classification_complete"] = self._is_classification_complete(
+            normalized
+        )
+        if not normalized.get("reasoning"):
+            normalized["reasoning"] = "No reasoning provided by model output."
+        return normalized
+
+    def _summarize_attachments_for_prompt(self, attachments: List[Dict[str, Any]]) -> str:
+        if not attachments:
+            return "None"
+
+        lines = []
+        for attachment in attachments[: self.multimodal_max_attachments]:
+            lines.append(
+                f"- filename={attachment.get('filename') or 'unknown'}, "
+                f"mime_type={attachment.get('mime_type') or 'unknown'}, "
+                f"size={attachment.get('size', 'unknown')}"
+            )
+        return "\n".join(lines)
+
+    def _build_text_analysis_prompt(self, email_data: Dict[str, Any], timezone: str) -> str:
+        attachment_summary = self._summarize_attachments_for_prompt(
+            email_data.get("attachments", [])
+        )
+        return f"""Analyze this email and provide a structured analysis based on the EmailAnalysisResult schema.
 
 From: {email_data.get('from', '')}
 Subject: {email_data.get('subject', '')}
 Received Date: {email_data.get('received_date', '')}
 Body: {email_data.get('body', '')}
+Body Quality: {email_data.get('body_quality', 'unknown')}
+Attachments:
+{attachment_summary}
 
 Note: Use the received date as reference point for any relative time expressions like 'tomorrow', 'next week', etc.
 All datetime fields should be in ISO format with {timezone} timezone.
+Always return valid values for is_spam, category, and priority.
 """
 
-        messages = [
-            SystemMessage(content=self.system_prompt),
-            HumanMessage(content=analysis_prompt),
+    def _build_multimodal_content(
+        self, email_data: Dict[str, Any], timezone: str
+    ) -> List[Dict[str, Any]]:
+        """Build multimodal HumanMessage content blocks from hydrated attachments."""
+        content: List[Dict[str, Any]] = [
+            {
+                "type": "text",
+                "text": f"""Analyze this email and attachments. Return valid structured output for EmailAnalysisResult.
+
+From: {email_data.get('from', '')}
+Subject: {email_data.get('subject', '')}
+Received Date: {email_data.get('received_date', '')}
+Body (possibly short or empty): {email_data.get('body', '')}
+Body Quality: {email_data.get('body_quality', 'unknown')}
+
+Use attachment content as primary context when body text is weak.
+All datetime fields should be in ISO format with {timezone} timezone.
+Always return valid values for is_spam, category, and priority.
+""",
+            }
         ]
 
-        try:
-            async with self.semaphore:
-                if hasattr(self.structured_llm, "ainvoke"):
-                    result = await self.structured_llm.ainvoke(messages)
-                else:
-                    result = await asyncio.to_thread(self.structured_llm.invoke, messages)
+        attachment_count = 0
+        for attachment in email_data.get("attachments", []):
+            if attachment_count >= self.multimodal_max_attachments:
+                break
+            data_b64 = attachment.get("data_b64")
+            mime_type = str(attachment.get("mime_type") or "")
+            if not data_b64:
+                continue
+            if mime_type.startswith("image/"):
+                content.append(
+                    {"type": "image", "base64": data_b64, "mime_type": mime_type}
+                )
+                attachment_count += 1
+            elif mime_type == "application/pdf":
+                content.append(
+                    {"type": "file", "base64": data_b64, "mime_type": mime_type}
+                )
+                attachment_count += 1
+        return content
 
-            if not result:
-                self.logger.error("Structured output returned None")
-                return None
+    async def _invoke_structured_analysis(
+        self, messages: List[Any]
+    ) -> Optional[Dict[str, Any]]:
+        """Invoke structured LLM and safely extract parsed output."""
+        async with self.semaphore:
+            if hasattr(self.structured_llm, "ainvoke"):
+                response = await self.structured_llm.ainvoke(messages)
+            else:
+                response = await asyncio.to_thread(self.structured_llm.invoke, messages)
 
-            return result.model_dump()
-        except Exception as e:
-            # Let the retry logic handle specific exclusions if needed, 
-            # but usually we want to propagate communication errors to allow retries.
-            raise
+        parsed: Any = response
+        if isinstance(response, dict) and "parsed" in response:
+            parsed = response.get("parsed")
 
-    async def wait_for_rate_limit(self) -> None:
-        """Wait if we're approaching rate limits (RPM)."""
+        if parsed is None:
+            return None
+        if hasattr(parsed, "model_dump"):
+            parsed = parsed.model_dump()
+        if not isinstance(parsed, dict):
+            return None
+        return self._normalize_analysis_result(parsed)
+
+    def _should_use_multimodal_fallback(self, email_data: Dict[str, Any]) -> bool:
+        """Decide when to run multimodal fallback analysis."""
+        if not self.enable_multimodal_fallback:
+            return False
+        if not email_data.get("attachments"):
+            return False
+
+        body_quality = str(email_data.get("body_quality") or "").lower()
+        if body_quality in {"short_text", "no_text"}:
+            return True
+
+        body = str(email_data.get("body") or "").strip()
+        return len(body) < 80 and bool(email_data.get("has_non_text_content"))
+
+    def _apply_heuristic_fallback(
+        self, email_data: Dict[str, Any], reason: str
+    ) -> Dict[str, Any]:
+        """Deterministic fallback that always returns complete classification."""
+        sender = str(email_data.get("from", "")).lower()
+        subject = str(email_data.get("subject", "")).lower()
+        body = str(email_data.get("body", "")).lower()
+        text = f"{sender}\n{subject}\n{body}"
+
+        spam_markers = [
+            "winner",
+            "lottery",
+            "inheritance",
+            "bank details",
+            "act now",
+            "limited time",
+            "urgent business proposal",
+            "crypto investment",
+        ]
+        emergency_markers = ["security breach", "urgent", "asap", "immediately", "deadline"]
+        marketing_markers = ["unsubscribe", "sale", "discount", "promotion", "offer"]
+        newsletter_markers = ["newsletter", "digest", "weekly update", "daily briefing"]
+        shopping_markers = ["order", "receipt", "invoice", "shipment", "tracking"]
+        school_markers = [".edu", "course", "class", "assignment", "exam"]
+        family_markers = ["mom", "dad", "family", "brother", "sister"]
+        social_markers = ["linkedin", "facebook", "instagram", "twitter", "social"]
+        work_markers = ["meeting", "project", "client", "stakeholder", "deadline", "team"]
+
+        spam_score = sum(1 for marker in spam_markers if marker in text)
+        is_spam = Spam.SPAM.value if spam_score >= 2 else Spam.NOT_SPAM.value
+
+        if is_spam == Spam.SPAM.value:
+            category = EmailCategory.MARKETING.value
+            priority = EmailPriority.IGNORE.value
+        elif any(marker in text for marker in school_markers):
+            category = EmailCategory.SCHOOL.value
+            priority = EmailPriority.HIGH.value if "deadline" in text else EmailPriority.NORMAL.value
+        elif any(marker in text for marker in shopping_markers):
+            category = EmailCategory.SHOPPING.value
+            priority = EmailPriority.LOW.value
+        elif any(marker in text for marker in newsletter_markers):
+            category = EmailCategory.NEWSLETTER.value
+            priority = EmailPriority.IGNORE.value
+        elif any(marker in text for marker in marketing_markers):
+            category = EmailCategory.MARKETING.value
+            priority = EmailPriority.IGNORE.value
+        elif any(marker in text for marker in family_markers):
+            category = EmailCategory.FAMILY.value
+            priority = EmailPriority.NORMAL.value
+        elif any(marker in text for marker in social_markers):
+            category = EmailCategory.SOCIAL.value
+            priority = EmailPriority.LOW.value
+        elif any(marker in text for marker in work_markers):
+            category = EmailCategory.WORK.value
+            priority = (
+                EmailPriority.URGENT.value
+                if any(marker in text for marker in emergency_markers)
+                else EmailPriority.NORMAL.value
+            )
+        else:
+            category = EmailCategory.PERSONAL.value
+            priority = (
+                EmailPriority.URGENT.value
+                if any(marker in text for marker in emergency_markers)
+                else EmailPriority.NORMAL.value
+            )
+
+        fallback = {
+            "is_spam": is_spam,
+            "category": category,
+            "priority": priority,
+            "required_tools": [],
+            "calendar_event": None,
+            "reminder": None,
+            "task": None,
+            "reasoning": f"Heuristic fallback applied: {reason}",
+        }
+        return self._finalize_analysis_result(fallback, "heuristic")
+
+    async def analyze_email(self, email_data: Dict[str, Any], timezone: str = "UTC") -> Optional[Dict[str, Any]]:
+        """Analyze an email with text-first + multimodal + deterministic fallback."""
+        await self.wait_for_rate_limit()
+
+        self.logger.info(
+            f"Analyzing email from {email_data.get('from', 'Unknown')} with subject: {email_data.get('subject', 'No subject')}"
+        )
+
+        # Stage A: Text-only structured analysis.
+        text_prompt = self._build_text_analysis_prompt(email_data, timezone)
+        text_messages = [
+            SystemMessage(content=self.system_prompt),
+            HumanMessage(content=text_prompt),
+        ]
+        stage_a = await self._invoke_structured_analysis(text_messages)
+        if stage_a:
+            finalized_a = self._finalize_analysis_result(stage_a, "llm_text")
+            if finalized_a.get("classification_complete"):
+                return finalized_a
+
+        # Stage B: Multimodal structured analysis for weak body content.
+        if self._should_use_multimodal_fallback(email_data):
+            multimodal_content = self._build_multimodal_content(email_data, timezone)
+            # Only run multimodal if we actually have binary blocks besides text.
+            if len(multimodal_content) > 1:
+                multimodal_messages = [
+                    SystemMessage(content=self.system_prompt),
+                    HumanMessage(content=multimodal_content),
+                ]
+                stage_b = await self._invoke_structured_analysis(multimodal_messages)
+                if stage_b:
+                    finalized_b = self._finalize_analysis_result(stage_b, "llm_multimodal")
+                    if finalized_b.get("classification_complete"):
+                        return finalized_b
+
+        # Stage C: Deterministic fallback to guarantee category/priority.
+        return self._apply_heuristic_fallback(
+            email_data, reason="LLM output was incomplete after retries/fallback"
+        )
+
+    async def wait_for_rate_limit(self, tokens_used: Optional[int] = None) -> None:
+        """Wait if we're approaching rate limits (RPM or TPM)."""
+        global _token_usage
+        
         # RPM Limiting (Requests Per Minute)
         if not hasattr(self, '_request_timestamps'):
             self._request_timestamps = []
@@ -448,6 +720,29 @@ All datetime fields should be in ISO format with {timezone} timezone.
             
         # Record this request
         self._request_timestamps.append(datetime.now(timezone.utc))
+
+        # TPM Limiting (Tokens Per Minute) - Existing Logic
+        if (now - _token_usage['reset_time']).total_seconds() >= 60:
+            _token_usage = {'tokens_used': 0, 'reset_time': now}
+        
+        if tokens_used:
+            _token_usage['tokens_used'] += tokens_used
+
+        if _token_usage['tokens_used'] > TOKEN_LIMIT_PER_MINUTE * 0.8:
+            # Try to rotate key first for token limit too
+            if self.rotate_api_key():
+                 self.logger.info(f"Approaching token limit ({_token_usage['tokens_used']}/{TOKEN_LIMIT_PER_MINUTE}). Rotated API key to avoid wait.")
+                 _token_usage = {'tokens_used': 0, 'reset_time': datetime.now(timezone.utc)}
+            else:
+                seconds_until_reset = 60 - (now - _token_usage['reset_time']).total_seconds()
+                wait_time = max(1, seconds_until_reset)
+                self.logger.info(
+                    f"Approaching token limit ({_token_usage['tokens_used']}/{TOKEN_LIMIT_PER_MINUTE}). Waiting {wait_time:.2f}s")
+                await asyncio.sleep(wait_time)
+                _token_usage = {
+                    'tokens_used': 0,
+                    'reset_time': datetime.now(timezone.utc)
+                }
 
     async def analyze_with_retry(self, input_data: Dict[str, Any], timezone: str, max_retries: int = 3) -> Optional[Dict[str, Any]]:
         """Analyze an email with retry logic for transient errors."""
@@ -483,9 +778,14 @@ All datetime fields should be in ISO format with {timezone} timezone.
                 else:
                     self.logger.error(
                         f"Failed to analyze email after {max_retries} retries: {str(e)}")
-                    return None
+                    return self._apply_heuristic_fallback(
+                        input_data,
+                        reason=f"LLM unavailable after {max_retries} retries: {type(e).__name__}",
+                    )
 
-        return None
+        return self._apply_heuristic_fallback(
+            input_data, reason="Retry loop exhausted unexpectedly"
+        )
 
     async def analyze_batch_with_rate_limiting(self, email_batch: List[Dict[str, Any]], timezone: str, chunk_size: int = 3) -> List[Optional[Dict[str, Any]]]:
         """Analyze a batch of emails with simple chunking."""

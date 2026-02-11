@@ -7,6 +7,12 @@
   "gemini_temperature": 0.1,
   "gemini_max_output_tokens": 2048,
   "gemini_timeout": 60,
+  "enable_multimodal_fallback": true,
+  "enforce_both_labels": true,
+  "spam_disposition": "trash",
+  "cleanup_spam_failsafe": true,
+  "multimodal_max_attachments": 3,
+  "multimodal_max_attachment_bytes": 2000000,
   "labels": {
     "processed": "ProcessedByAgent",
     "spam": "Spam",

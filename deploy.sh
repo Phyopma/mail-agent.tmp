@@ -35,10 +35,16 @@ fi
 echo "Configuring docker auth..."
 gcloud auth configure-docker "$REGION-docker.pkg.dev" --quiet
 
-echo "Building Docker image for linux/amd64..."
-docker build --platform linux/amd64 --provenance=false -t "$IMAGE_URI" .
-echo "Pushing Docker image..."
-docker push "$IMAGE_URI"
+if docker info >/dev/null 2>&1; then
+  echo "Building Docker image for linux/amd64..."
+  docker build --platform linux/amd64 --provenance=false -t "$IMAGE_URI" .
+  echo "Pushing Docker image..."
+  docker push "$IMAGE_URI"
+else
+  echo "Docker daemon unavailable. Falling back to Cloud Build..."
+  gcloud services enable cloudbuild.googleapis.com --quiet
+  gcloud builds submit --tag "$IMAGE_URI" .
+fi
 
 # Create or update secrets (expects local files)
 echo "Updating secrets..."
@@ -60,12 +66,10 @@ else
   exit 1
 fi
 
-UCI_TOKEN_EXISTS=false
 if [[ -f credentials/uci_token.pickle ]]; then
   echo "Updating uci-token..."
   gcloud secrets describe uci-token || gcloud secrets create uci-token
   gcloud secrets versions add uci-token --data-file=credentials/uci_token.pickle
-  UCI_TOKEN_EXISTS=true
 else
   echo "Warning: credentials/uci_token.pickle not found but might be needed."
 fi
@@ -101,19 +105,16 @@ gcloud projects add-iam-policy-binding "$PROJECT_ID" \
   --condition=None \
   --quiet
 
-# Configure secrets with separate directories (Cloud Run limitation workaround)
+# Configure secrets with distinct mount directories per secret to satisfy Cloud Run
+# mount constraints while preserving app path resolution fallbacks.
 echo "Configuring secrets for main job..."
 gcloud run jobs update "$JOB_NAME" --region "$REGION" --clear-secrets
-
-# Build secrets list conditionally
-SECRETS_LIST="/app/secrets/gmail-creds/gmail_credentials.json=gmail-credentials:latest,/app/secrets/gmail-token/gmail_token.pickle=gmail-token:latest"
-if [[ "$UCI_TOKEN_EXISTS" == "true" ]]; then
-  SECRETS_LIST="$SECRETS_LIST,/app/secrets/uci-token/uci_token.pickle=uci-token:latest"
+SECRET_MOUNTS="/app/secrets/gmail-creds/gmail_credentials.json=gmail-credentials:latest,/app/secrets/gmail-token/gmail_token.pickle=gmail-token:latest,GOOGLE_API_KEY=gemini-api-key:latest"
+if gcloud secrets describe uci-token >/dev/null 2>&1; then
+  SECRET_MOUNTS="$SECRET_MOUNTS,/app/secrets/uci-token/uci_token.pickle=uci-token:latest"
 fi
-SECRETS_LIST="$SECRETS_LIST,GOOGLE_API_KEY=gemini-api-key:latest"
-
 gcloud run jobs update "$JOB_NAME" --region "$REGION" \
-  --set-secrets="$SECRETS_LIST"
+  --set-secrets="$SECRET_MOUNTS"
 echo "Deployed Cloud Run Job: $JOB_NAME"
 
 # Deploy Cleanup Job
@@ -128,19 +129,11 @@ else
   gcloud run jobs update "$CLEANUP_JOB_NAME" --image "$IMAGE_URI" --region "$REGION" --command="python,cleanup_data.py"
 fi
 
-# Configure secrets for cleanup job with separate directories
+# Configure secrets for cleanup job.
 echo "Configuring secrets for cleanup job..."
 gcloud run jobs update "$CLEANUP_JOB_NAME" --region "$REGION" --clear-secrets
-
-# Build secrets list conditionally
-CLEANUP_SECRETS_LIST="/app/secrets/gmail-creds/gmail_credentials.json=gmail-credentials:latest,/app/secrets/gmail-token/gmail_token.pickle=gmail-token:latest"
-if [[ "$UCI_TOKEN_EXISTS" == "true" ]]; then
-  CLEANUP_SECRETS_LIST="$CLEANUP_SECRETS_LIST,/app/secrets/uci-token/uci_token.pickle=uci-token:latest"
-fi
-CLEANUP_SECRETS_LIST="$CLEANUP_SECRETS_LIST,GOOGLE_API_KEY=gemini-api-key:latest"
-
 gcloud run jobs update "$CLEANUP_JOB_NAME" --region "$REGION" \
-  --set-secrets="$CLEANUP_SECRETS_LIST"
+  --set-secrets="$SECRET_MOUNTS"
 echo "Deployed Cloud Run Job: $CLEANUP_JOB_NAME"
 
 # Configure Schedulers

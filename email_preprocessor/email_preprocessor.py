@@ -5,12 +5,11 @@ extracting text, and preparing the content for LLM processing. It ensures the
 output fits within specified length limits while preserving essential information.
 """
 
-from typing import Dict, Any, List, Tuple
+from typing import Dict, Any
 from bs4 import BeautifulSoup
 import re
 import base64
 import html
-from collections import defaultdict
 
 
 class EmailPreprocessor:
@@ -50,8 +49,7 @@ class EmailPreprocessor:
         try:
             # Decode base64 content if present
             if email_data.get('body'):
-                decoded_content = base64.urlsafe_b64decode(
-                    email_data['body'].encode('utf-8')).decode('utf-8')
+                decoded_content = self._safe_decode_body(email_data['body'])
             else:
                 decoded_content = ''
 
@@ -62,10 +60,15 @@ class EmailPreprocessor:
                 cleaned_text)
             cleaned_text = self._normalize_whitespace(cleaned_text)
             cleaned_text = self._clean_special_characters(cleaned_text)
+            cleaned_text = cleaned_text[: self.max_chars]
+            text_length = len(cleaned_text)
+            body_quality = self._classify_body_quality(text_length)
 
             # Update email data with cleaned content
             processed_email = email_data.copy()
             processed_email['cleaned_body'] = cleaned_text
+            processed_email['text_length'] = text_length
+            processed_email['body_quality'] = body_quality
             processed_email['preprocessing_status'] = 'success'
 
             return processed_email
@@ -76,7 +79,30 @@ class EmailPreprocessor:
             error_email['preprocessing_status'] = 'error'
             error_email['error_message'] = str(e)
             error_email['cleaned_body'] = ''
+            error_email['text_length'] = 0
+            error_email['body_quality'] = 'no_text'
             return error_email
+
+    def _safe_decode_body(self, body: str) -> str:
+        """Decode Gmail body data using urlsafe base64 with robust fallbacks."""
+        if not body:
+            return ''
+
+        try:
+            padded_body = body + "=" * (-len(body) % 4)
+            decoded = base64.urlsafe_b64decode(padded_body.encode('utf-8'))
+            return decoded.decode('utf-8', errors='replace')
+        except Exception:
+            # If the input is not valid base64, treat it as plain text.
+            return str(body)
+
+    def _classify_body_quality(self, text_length: int) -> str:
+        """Classify content quality for downstream analyzer fallback logic."""
+        if text_length == 0:
+            return "no_text"
+        if text_length < 80:
+            return "short_text"
+        return "full_text"
 
     def _clean_html(self, content: str) -> str:
         """Remove HTML tags and extract text content.

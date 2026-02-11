@@ -1,6 +1,7 @@
 import asyncio
 import logging
 import os
+from datetime import datetime, timezone
 from unittest.mock import MagicMock, patch
 from spam_detector.unified_email_analyzer import UnifiedEmailAnalyzer
 
