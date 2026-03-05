@@ -20,6 +20,11 @@ ACCOUNTS_SECRET_NAME=${ACCOUNTS_SECRET_NAME:-"mail-agent-accounts"}
 ACCOUNTS_SECRET_MOUNT="${ACCOUNTS_SECRET_MOUNT:-/app/secrets/accounts/accounts.json}"
 HAS_ACCOUNTS_SECRET="false"
 
+# Auto-detect local accounts.json when no explicit ACCOUNTS_FILE is configured.
+if [[ -z "$ACCOUNTS_FILE" && -f "accounts.json" ]]; then
+  ACCOUNTS_FILE="$(pwd)/accounts.json"
+fi
+
 IMAGE_URI="$REGION-docker.pkg.dev/$PROJECT_ID/$REPO/$IMAGE_NAME:$TAG"
 
 if [[ "$PROJECT_ID" == "YOUR_PROJECT_ID" ]]; then
