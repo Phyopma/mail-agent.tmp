@@ -145,7 +145,7 @@ if [[ "$CREATE_SCHEDULER" == "true" ]]; then
   fi
 
   # Main job scheduler (hourly)
-  SCHEDULER_URI="https://$REGION-run.googleapis.com/apis/run.googleapis.com/v1/namespaces/$PROJECT_ID/jobs/$JOB_NAME:run"
+  SCHEDULER_URI="https://$REGION-run.googleapis.com/apis/run.googleapis.com/v1/namespaces/$PROJECT_ID/jobs/${JOB_NAME}:run"
 
   echo "Configuring Cloud Scheduler for main job (hourly)..."
   if gcloud scheduler jobs describe "$SCHEDULER_JOB" --location "$REGION" 2>/dev/null; then
@@ -168,7 +168,7 @@ if [[ "$CREATE_SCHEDULER" == "true" ]]; then
   # Cleanup job scheduler (daily at midnight)
   CLEANUP_SCHEDULER_JOB="mail-agent-cleanup-daily"
   CLEANUP_SCHEDULE="0 0 * * *"
-  CLEANUP_SCHEDULER_URI="https://$REGION-run.googleapis.com/apis/run.googleapis.com/v1/namespaces/$PROJECT_ID/jobs/$CLEANUP_JOB_NAME:run"
+  CLEANUP_SCHEDULER_URI="https://$REGION-run.googleapis.com/apis/run.googleapis.com/v1/namespaces/$PROJECT_ID/jobs/${CLEANUP_JOB_NAME}:run"
 
   echo "Configuring Cloud Scheduler for cleanup job (daily)..."
   if gcloud scheduler jobs describe "$CLEANUP_SCHEDULER_JOB" --location "$REGION" 2>/dev/null; then
