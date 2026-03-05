@@ -130,15 +130,18 @@ gcloud projects add-iam-policy-binding "$PROJECT_ID" \
 # mount constraints while preserving app path resolution fallbacks.
 echo "Configuring secrets for main job..."
 gcloud run jobs update "$JOB_NAME" --region "$REGION" --clear-secrets
-SECRET_MOUNTS="/app/secrets/gmail-creds/gmail_credentials.json=gmail-credentials:latest,/app/secrets/gmail-token/gmail_token.pickle=gmail-token:latest,GOOGLE_API_KEY=gemini-api-key:latest"
+SECRET_MOUNTS="/app/secrets/gmail-creds/gmail_credentials.json=gmail-credentials:latest,/app/secrets/gmail-token/gmail_token.pickle=gmail-token:latest"
 if gcloud secrets describe uci-token >/dev/null 2>&1; then
   SECRET_MOUNTS="$SECRET_MOUNTS,/app/secrets/uci-token/uci_token.pickle=uci-token:latest"
 fi
 if [[ "$HAS_ACCOUNTS_SECRET" == "true" ]]; then
   SECRET_MOUNTS="$SECRET_MOUNTS,${ACCOUNTS_SECRET_MOUNT}=${ACCOUNTS_SECRET_NAME}:latest"
 fi
+SECRET_MOUNTS="$SECRET_MOUNTS,/app/secrets/gemini-api-key=gemini-api-key:latest"
 gcloud run jobs update "$JOB_NAME" --region "$REGION" \
   --set-secrets="$SECRET_MOUNTS"
+gcloud run jobs update "$JOB_NAME" --region "$REGION" \
+  --set-env-vars "GOOGLE_API_KEY_FILE=/app/secrets/gemini-api-key"
 if [[ "$HAS_ACCOUNTS_SECRET" == "true" ]]; then
   gcloud run jobs update "$JOB_NAME" --region "$REGION" \
     --set-env-vars "MAIL_AGENT_ACCOUNTS_FILE=$ACCOUNTS_SECRET_MOUNT"
@@ -162,6 +165,8 @@ echo "Configuring secrets for cleanup job..."
 gcloud run jobs update "$CLEANUP_JOB_NAME" --region "$REGION" --clear-secrets
 gcloud run jobs update "$CLEANUP_JOB_NAME" --region "$REGION" \
   --set-secrets="$SECRET_MOUNTS"
+gcloud run jobs update "$CLEANUP_JOB_NAME" --region "$REGION" \
+  --set-env-vars "GOOGLE_API_KEY_FILE=/app/secrets/gemini-api-key"
 if [[ "$HAS_ACCOUNTS_SECRET" == "true" ]]; then
   gcloud run jobs update "$CLEANUP_JOB_NAME" --region "$REGION" \
     --set-env-vars "MAIL_AGENT_ACCOUNTS_FILE=$ACCOUNTS_SECRET_MOUNT"

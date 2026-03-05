@@ -7,7 +7,6 @@ LangChain's ChatGoogleGenerativeAI and structured Pydantic outputs.
 import asyncio
 import os
 import random
-from inspect import signature
 from datetime import datetime, timezone
 from enum import Enum
 from typing import Any, Dict, List, Optional
@@ -209,8 +208,31 @@ class UnifiedEmailAnalyzer:
         """Load API keys from environment variable, supporting comma-separated list."""
         api_key_str = os.environ.get("GOOGLE_API_KEY", "")
         if not api_key_str:
-            self.logger.warning("No GOOGLE_API_KEY found in environment")
-            return []
+            api_key_file = os.environ.get("GOOGLE_API_KEY_FILE")
+            file_candidates = [
+                api_key_file,
+                "/app/secrets/GOOGLE_API_KEY",
+                "/app/secrets/gemini-api-key",
+                "/app/secrets/gemini_api_key",
+            ]
+            for file_path in file_candidates:
+                if not file_path:
+                    continue
+                try:
+                    with open(file_path) as key_file:
+                        api_key_str = key_file.read().strip()
+                        break
+                except FileNotFoundError:
+                    continue
+
+            if not api_key_str and file_candidates:
+                existing = ", ".join(str(path) for path in file_candidates if path)
+                self.logger.debug(
+                    "Google API key not found in environment; checked file paths: %s",
+                    existing,
+                )
+                self.logger.warning("No GOOGLE_API_KEY found in environment")
+                return []
             
         keys = [k.strip() for k in api_key_str.split(",") if k.strip()]
         # Always log how many keys were loaded
@@ -242,11 +264,6 @@ class UnifiedEmailAnalyzer:
 
     def _build_model(self) -> ChatGoogleGenerativeAI:
         """Build the Gemini chat model with best-effort parameter support."""
-        try:
-            init_params = set(signature(ChatGoogleGenerativeAI.__init__).parameters.keys())
-        except (TypeError, ValueError):
-            init_params = None
-
         base_kwargs = {
             "model": self.model_name,
             "temperature": self.temperature,
@@ -280,10 +297,6 @@ class UnifiedEmailAnalyzer:
                     kwargs.update(output_kwargs)
                     if timeout_value is not None:
                         kwargs["timeout"] = timeout_value
-
-                    # Filter unsupported kwargs based on runtime model signature.
-                    if init_params is not None:
-                        kwargs = {k: v for k, v in kwargs.items() if k in init_params}
 
                     try:
                         return ChatGoogleGenerativeAI(**kwargs)

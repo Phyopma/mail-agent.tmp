@@ -114,6 +114,7 @@ async def run_pipeline(
 
     except Exception as e:
         logger.exception(f"Pipeline Error: {str(e)}")
+        raise
 
 
 async def process_emails(
@@ -147,6 +148,7 @@ async def process_emails(
 
     except Exception as e:
         logger.exception(f"Error loading accounts configuration: {str(e)}")
+        raise
 
 
 def main() -> None:
