@@ -4,10 +4,11 @@ This module provides a unified interface for managing Google API services
 including Gmail, Calendar, and Tasks.
 """
 
-from typing import Dict, Any, Optional
 import os
 import pickle
 import asyncio
+import shutil
+from typing import Dict, Any, Optional
 from google.oauth2.credentials import Credentials
 from google_auth_oauthlib.flow import InstalledAppFlow
 from google.auth.transport.requests import Request
@@ -73,6 +74,31 @@ class GoogleServiceManager:
         # Return original path (will fail with helpful error message)
         return path
 
+    def _resolve_writable_token_path(self, token_path: str) -> str:
+        """Return a writable token path, with writable fallback for read-only mounts."""
+        if not token_path:
+            return token_path
+
+        token_dir = os.path.dirname(token_path) or "."
+        if os.access(token_dir, os.W_OK):
+            return token_path
+
+        writable_token_path = os.path.join(
+            "/tmp",
+            "mail-agent",
+            "tokens",
+            os.path.basename(token_path),
+        )
+        os.makedirs(os.path.dirname(writable_token_path), exist_ok=True)
+
+        if os.path.exists(token_path) and not os.path.exists(writable_token_path):
+            try:
+                shutil.copyfile(token_path, writable_token_path)
+            except OSError:
+                pass
+
+        return writable_token_path
+
     async def setup_services(self, credentials_path: str, token_path: str, account_id: str = 'default') -> Dict[str, Any]:
         """Setup Google API services for Gmail, Calendar, and Tasks.
 
@@ -122,6 +148,8 @@ class GoogleServiceManager:
         """
         creds = None
 
+        writable_token_path = self._resolve_writable_token_path(token_path)
+
         if os.path.exists(token_path):
             with open(token_path, 'rb') as token:
                 creds = pickle.load(token)
@@ -134,7 +162,7 @@ class GoogleServiceManager:
                     credentials_path, self.SCOPES)
                 creds = flow.run_local_server(port=0)
 
-            with open(token_path, 'wb') as token:
+            with open(writable_token_path, 'wb') as token:
                 pickle.dump(creds, token)
 
         return creds
