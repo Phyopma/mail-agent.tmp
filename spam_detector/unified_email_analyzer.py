@@ -7,6 +7,7 @@ LangChain's ChatGoogleGenerativeAI and structured Pydantic outputs.
 import asyncio
 import os
 import random
+from inspect import signature
 from datetime import datetime, timezone
 from enum import Enum
 from typing import Any, Dict, List, Optional
@@ -14,7 +15,7 @@ from typing import Any, Dict, List, Optional
 from dotenv import load_dotenv
 from langchain_core.messages import HumanMessage, SystemMessage
 from langchain_google_genai import ChatGoogleGenerativeAI
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, ValidationError
 
 try:
     from mail_agent.config import config
@@ -241,46 +242,59 @@ class UnifiedEmailAnalyzer:
 
     def _build_model(self) -> ChatGoogleGenerativeAI:
         """Build the Gemini chat model with best-effort parameter support."""
+        try:
+            init_params = set(signature(ChatGoogleGenerativeAI.__init__).parameters.keys())
+        except (TypeError, ValueError):
+            init_params = None
+
         base_kwargs = {
             "model": self.model_name,
             "temperature": self.temperature,
         }
         
-        # Explicitly pass the current API key if we have managed keys
+        # Explicitly pass the current API key if we have managed keys.
         if self.api_keys:
             base_kwargs["google_api_key"] = self.api_keys[self.current_key_index]
 
-        # Try provider-native max_output_tokens with timeout
-        try:
-            return ChatGoogleGenerativeAI(
-                **base_kwargs,
-                max_output_tokens=self.max_output_tokens,
-                timeout=self.timeout,
-            )
-        except TypeError:
-            pass
+        key_candidates = [
+            {},
+            {"google_api_key": self.api_keys[self.current_key_index]}
+            if self.api_keys else {},
+            {"api_key": self.api_keys[self.current_key_index]}
+            if self.api_keys else {},
+        ]
+        output_candidates = [
+            {"max_output_tokens": self.max_output_tokens},
+            {"max_tokens": self.max_output_tokens},
+            {},
+        ]
+        timeout_candidates = [self.timeout, None]
 
-        # Retry without timeout
-        try:
-            return ChatGoogleGenerativeAI(
-                **base_kwargs,
-                max_output_tokens=self.max_output_tokens,
-            )
-        except TypeError:
-            pass
+        last_error: Optional[Exception] = None
 
-        # Fallback to max_tokens with timeout
-        try:
-            return ChatGoogleGenerativeAI(
-                **base_kwargs,
-                max_tokens=self.max_output_tokens,
-                timeout=self.timeout,
-            )
-        except TypeError:
-            return ChatGoogleGenerativeAI(
-                **base_kwargs,
-                max_tokens=self.max_output_tokens,
-            )
+        for key_kwargs in key_candidates:
+            for output_kwargs in output_candidates:
+                for timeout_value in timeout_candidates:
+                    kwargs = dict(base_kwargs)
+                    kwargs.update(key_kwargs)
+                    kwargs.update(output_kwargs)
+                    if timeout_value is not None:
+                        kwargs["timeout"] = timeout_value
+
+                    # Filter unsupported kwargs based on runtime model signature.
+                    if init_params is not None:
+                        kwargs = {k: v for k, v in kwargs.items() if k in init_params}
+
+                    try:
+                        return ChatGoogleGenerativeAI(**kwargs)
+                    except (TypeError, ValidationError) as exc:
+                        last_error = exc
+
+        if last_error is not None:
+            raise last_error
+
+        # Final hard fallback for unexpected API signature changes.
+        return ChatGoogleGenerativeAI()
 
     @staticmethod
     def _enum_to_str(value: Any, upper: bool = False) -> str:
