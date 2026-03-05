@@ -5,7 +5,7 @@ extracting text, and preparing the content for LLM processing. It ensures the
 output fits within specified length limits while preserving essential information.
 """
 
-from typing import Dict, Any
+from typing import Dict, Any, Tuple
 from bs4 import BeautifulSoup
 import re
 import base64
@@ -52,9 +52,11 @@ class EmailPreprocessor:
                 decoded_content = self._safe_decode_body(email_data['body'])
             else:
                 decoded_content = ''
+            extraction_source = self._infer_extraction_source(decoded_content, email_data)
 
             # Clean the content
             cleaned_text = self._clean_html(decoded_content)
+            cleaned_text, has_reply_chain = self._strip_quoted_reply_blocks(cleaned_text)
             cleaned_text = self._clean_urls(cleaned_text)
             cleaned_text = self._remove_signatures_and_disclaimers(
                 cleaned_text)
@@ -70,6 +72,8 @@ class EmailPreprocessor:
             processed_email['text_length'] = text_length
             processed_email['body_quality'] = body_quality
             processed_email['preprocessing_status'] = 'success'
+            processed_email['extraction_source'] = extraction_source
+            processed_email['has_reply_chain'] = has_reply_chain
 
             return processed_email
 
@@ -81,7 +85,20 @@ class EmailPreprocessor:
             error_email['cleaned_body'] = ''
             error_email['text_length'] = 0
             error_email['body_quality'] = 'no_text'
+            error_email['extraction_source'] = 'none'
+            error_email['has_reply_chain'] = False
             return error_email
+
+    def _infer_extraction_source(self, decoded_content: str, email_data: Dict[str, Any]) -> str:
+        source = str(email_data.get("extraction_source") or "").strip().lower()
+        if source in {"text_plain", "text_html", "mixed", "none"}:
+            return source
+        if not decoded_content.strip():
+            return "none"
+        lowered = decoded_content.lower()
+        if "<html" in lowered or "<body" in lowered or re.search(r"<[^>]+>", lowered):
+            return "text_html"
+        return "text_plain"
 
     def _safe_decode_body(self, body: str) -> str:
         """Decode Gmail body data using urlsafe base64 with robust fallbacks."""
@@ -123,8 +140,8 @@ class EmailPreprocessor:
         for element in soup(['script', 'style']):
             element.decompose()
 
-        # Get text content
-        text = soup.get_text(separator=' ')
+        # Get text content while preserving line boundaries for downstream heuristics.
+        text = soup.get_text(separator='\n')
         return text
 
     def _clean_urls(self, text: str) -> str:
@@ -136,15 +153,14 @@ class EmailPreprocessor:
         Returns:
             Text with URLs removed
         """
-        # Remove URLs with common protocols
-        text = re.sub(r'https?://\S+|www\.\S+', '', text)
-
-        # Remove remaining URLs (without protocol)
+        # Replace URLs with placeholders so the analyzer keeps "link present" signal.
+        text = re.sub(r'https?://\S+|www\.\S+', ' [URL] ', text)
         text = re.sub(
-            r'(?:\S+\.)+(?:com|org|net|edu|gov|mil|biz|info|io|ai|co)\S*', '', text)
-
-        # Clean up any remaining artifacts
-        text = re.sub(r'\s+', ' ', text)
+            r'(?:\S+\.)+(?:com|org|net|edu|gov|mil|biz|info|io|ai|co)\S*',
+            ' [URL] ',
+            text,
+        )
+        text = re.sub(r'(?:\s*\[URL\]\s*){2,}', ' [URL] ', text)
         return text.strip()
 
     def _normalize_whitespace(self, text: str) -> str:
@@ -160,11 +176,50 @@ class EmailPreprocessor:
         text = re.sub(
             r'[\u034f\u2800\u2000-\u200F\u2028-\u202F\u205F-\u206F\u3000\uFEFF]', '', text)
 
-        # Replace multiple whitespace (including newlines and tabs) with single space
-        text = re.sub(r'\s+', ' ', text)
+        # Normalize line endings and collapse horizontal whitespace without flattening lines.
+        text = text.replace('\r\n', '\n').replace('\r', '\n')
+        text = re.sub(r'[ \t]+', ' ', text)
 
-        # Remove leading/trailing whitespace
+        # Trim every line and collapse extra blank lines.
+        lines = [line.strip() for line in text.split('\n')]
+        text = '\n'.join(lines)
+        text = re.sub(r'\n{3,}', '\n\n', text)
         return text.strip()
+
+    def _strip_quoted_reply_blocks(self, text: str) -> Tuple[str, bool]:
+        """Remove quoted reply chain content while preserving current-message text."""
+        if not text:
+            return text, False
+
+        lines = text.split('\n')
+        stop_patterns = [
+            r'^\s*On .+wrote:\s*$',
+            r'^\s*-----\s*Original Message\s*-----\s*$',
+            r'^\s*From:\s?.+@.+$',
+        ]
+
+        cutoff_index = None
+        for idx, line in enumerate(lines):
+            if any(re.search(pattern, line, re.IGNORECASE) for pattern in stop_patterns):
+                cutoff_index = idx
+                break
+            # Some HTML-to-text conversions split "On ... wrote:" across lines.
+            if re.search(r'^\s*On .+$', line, re.IGNORECASE):
+                next_line = lines[idx + 1] if idx + 1 < len(lines) else ""
+                if re.search(r'^\s*wrote:\s*$', next_line, re.IGNORECASE):
+                    cutoff_index = idx
+                    break
+
+        has_reply_chain = cutoff_index is not None
+        working_lines = lines[:cutoff_index] if cutoff_index is not None else lines
+        filtered_lines = []
+        for line in working_lines:
+            if line.strip().startswith('>'):
+                has_reply_chain = True
+                continue
+            filtered_lines.append(line)
+
+        return '\n'.join(filtered_lines), has_reply_chain
 
     def _remove_signatures_and_disclaimers(self, text: str) -> str:
         """Remove email signatures and legal disclaimers.

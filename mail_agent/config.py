@@ -27,6 +27,11 @@ DEFAULT_CONFIG = {
     "enforce_both_labels": True,
     "spam_disposition": "trash",
     "cleanup_spam_failsafe": True,
+    "sender_unread_window_days": 30,
+    "sender_unread_threshold": 10,
+    "sender_overload_policy": "force_ignore",
+    "ignore_disposition": "archive",
+    "ignore_cleanup_days": 7,
     "multimodal_max_attachments": 3,
     "multimodal_max_attachment_bytes": 2000000,
     "labels": {
@@ -64,7 +69,7 @@ class ConfigManager:
                 print(f"Error loading config file: {e}")
 
         # Override with environment variables if they exist
-        # self._override_from_env()
+        self._override_from_env()
 
     def _override_from_env(self) -> None:
         """Override configuration with environment variables."""
@@ -82,6 +87,11 @@ class ConfigManager:
             "MAIL_AGENT_ENFORCE_BOTH_LABELS": "enforce_both_labels",
             "MAIL_AGENT_SPAM_DISPOSITION": "spam_disposition",
             "MAIL_AGENT_CLEANUP_SPAM_FAILSAFE": "cleanup_spam_failsafe",
+            "MAIL_AGENT_SENDER_UNREAD_WINDOW_DAYS": "sender_unread_window_days",
+            "MAIL_AGENT_SENDER_UNREAD_THRESHOLD": "sender_unread_threshold",
+            "MAIL_AGENT_SENDER_OVERLOAD_POLICY": "sender_overload_policy",
+            "MAIL_AGENT_IGNORE_DISPOSITION": "ignore_disposition",
+            "MAIL_AGENT_IGNORE_CLEANUP_DAYS": "ignore_cleanup_days",
             "MAIL_AGENT_MULTIMODAL_MAX_ATTACHMENTS": "multimodal_max_attachments",
             "MAIL_AGENT_MULTIMODAL_MAX_ATTACHMENT_BYTES": "multimodal_max_attachment_bytes",
         }
@@ -103,6 +113,9 @@ class ConfigManager:
                 elif config_key in {
                     "gemini_max_output_tokens",
                     "gemini_timeout",
+                    "sender_unread_window_days",
+                    "sender_unread_threshold",
+                    "ignore_cleanup_days",
                     "multimodal_max_attachments",
                     "multimodal_max_attachment_bytes",
                 }:

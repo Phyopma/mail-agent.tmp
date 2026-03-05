@@ -125,3 +125,11 @@ class TestEmailCleaner(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(deleted_ids, ["m-spam"])
         self.assertEqual(result["deleted"], 1)
 
+    async def test_ignore_retention_has_grace_period(self):
+        cleaner = EmailCleaner(_FakeFetcher())
+        self.assertFalse(
+            cleaner._should_delete(priority="Ignore", category="Marketing", email_age_days=1)
+        )
+        self.assertTrue(
+            cleaner._should_delete(priority="Ignore", category="Marketing", email_age_days=8)
+        )

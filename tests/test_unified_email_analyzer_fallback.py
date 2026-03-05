@@ -97,3 +97,26 @@ class TestUnifiedEmailAnalyzerFallback(unittest.IsolatedAsyncioTestCase):
         self.assertIsNotNone(result)
         self.assertEqual(result["classification_source"], "heuristic")
         self.assertTrue(result["classification_complete"])
+
+    def test_text_prompt_includes_sender_overload_context(self) -> None:
+        analyzer = self._build_analyzer_without_init()
+        prompt = UnifiedEmailAnalyzer._build_text_analysis_prompt(
+            analyzer,
+            {
+                "from": "sender@example.com",
+                "sender_email": "sender@example.com",
+                "subject": "Hello",
+                "received_date": "2026-03-01T10:00:00Z",
+                "body": "Body",
+                "body_quality": "full_text",
+                "attachments": [],
+                "sender_unread_count_window": 14,
+                "sender_overload": True,
+            },
+            "UTC",
+        )
+
+        self.assertIn("Sender Email: sender@example.com", prompt)
+        self.assertIn("Unread From Sender (", prompt)
+        self.assertIn("): 14", prompt)
+        self.assertIn("Sender Overload Flag: True", prompt)

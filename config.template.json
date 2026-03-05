@@ -11,6 +11,11 @@
   "enforce_both_labels": true,
   "spam_disposition": "trash",
   "cleanup_spam_failsafe": true,
+  "sender_unread_window_days": 30,
+  "sender_unread_threshold": 10,
+  "sender_overload_policy": "force_ignore",
+  "ignore_disposition": "archive",
+  "ignore_cleanup_days": 7,
   "multimodal_max_attachments": 3,
   "multimodal_max_attachment_bytes": 2000000,
   "labels": {

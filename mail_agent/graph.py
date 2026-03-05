@@ -27,8 +27,11 @@ class MailAgentStateModel(BaseModel):
     label_ids: Dict[str, str]
     preprocessed: Optional[Dict[str, Any]] = None
     analysis: Optional[Dict[str, Any]] = None
+    sender_unread_count_window: int = 0
+    sender_overload: bool = False
     classification_complete: bool = False
     classification_source: Optional[str] = None
+    priority_overridden_by_policy: bool = False
     spam_disposition_status: Optional[str] = None
     should_act: bool = False
     action_results: Dict[str, Any] = Field(default_factory=dict)
@@ -43,8 +46,11 @@ class MailAgentState(TypedDict, total=False):
     label_ids: Dict[str, str]
     preprocessed: Optional[Dict[str, Any]]
     analysis: Optional[Dict[str, Any]]
+    sender_unread_count_window: int
+    sender_overload: bool
     classification_complete: bool
     classification_source: Optional[str]
+    priority_overridden_by_policy: bool
     spam_disposition_status: Optional[str]
     should_act: bool
     action_results: Dict[str, Any]
@@ -94,6 +100,10 @@ def build_graph(
 
     enforce_both_labels = bool(config.get("enforce_both_labels", True))
     spam_disposition = str(config.get("spam_disposition", "trash")).lower()
+    sender_unread_window_days = int(config.get("sender_unread_window_days", 30))
+    sender_unread_threshold = int(config.get("sender_unread_threshold", 10))
+    sender_overload_policy = str(config.get("sender_overload_policy", "force_ignore")).lower()
+    ignore_disposition = str(config.get("ignore_disposition", "archive")).lower()
     multimodal_max_attachment_bytes = int(
         config.get("multimodal_max_attachment_bytes", 2000000)
     )
@@ -102,6 +112,8 @@ def build_graph(
         "fallback_used_count": 0,
         "spam_trashed_count": 0,
         "processed_without_both_labels": 0,
+        "sender_overload_override_count": 0,
+        "sender_stats_lookup_failure_count": 0,
     }
 
     def _increment_metric(name: str) -> None:
@@ -142,6 +154,29 @@ def build_graph(
 
         email_data = state.get("email", {})
         account_id = email_data.get("account_id", "default")
+        sender_email = str(
+            email_data.get("sender_email")
+            or email_data.get("from")
+            or ""
+        ).strip().lower()
+        sender_stats = {
+            "sender_unread_count_window": 0,
+            "sender_overload": False,
+        }
+        if sender_email and hasattr(fetcher, "get_sender_unread_window_stats"):
+            try:
+                sender_stats = await fetcher.get_sender_unread_window_stats(
+                    account_id=account_id,
+                    sender_email=sender_email,
+                    days=sender_unread_window_days,
+                    threshold=sender_unread_threshold,
+                )
+            except Exception as e:
+                _increment_metric("sender_stats_lookup_failure_count")
+                logger.warning(
+                    f"sender_unread_stats_lookup_failed sender={sender_email} error={str(e)}"
+                )
+
         hydrated_attachments = email_data.get("attachments", [])
         if hydrated_attachments:
             hydrated_attachments = await fetcher.hydrate_attachment_content(
@@ -153,6 +188,7 @@ def build_graph(
 
         analysis_input = {
             "from": email_data.get("from"),
+            "sender_email": sender_email,
             "subject": email_data.get("subject"),
             "body": preprocessed.get("cleaned_body", ""),
             "received_date": email_data.get("date"),
@@ -160,6 +196,10 @@ def build_graph(
             "text_length": preprocessed.get("text_length", 0),
             "attachments": hydrated_attachments,
             "has_non_text_content": bool(email_data.get("has_non_text_content")),
+            "sender_unread_count_window": int(
+                sender_stats.get("sender_unread_count_window", 0)
+            ),
+            "sender_overload": bool(sender_stats.get("sender_overload", False)),
         }
 
         analysis = await analyzer.analyze_with_retry(
@@ -179,6 +219,10 @@ def build_graph(
 
         return {
             "analysis": analysis,
+            "sender_unread_count_window": int(
+                sender_stats.get("sender_unread_count_window", 0)
+            ),
+            "sender_overload": bool(sender_stats.get("sender_overload", False)),
             "classification_source": classification_source,
             "classification_complete": bool(
                 analysis.get("classification_complete", False)
@@ -249,6 +293,34 @@ def build_graph(
                 "spam_disposition_status": "error",
                 "errors": (state.get("errors") or []) + ["Failed to trash spam email"],
             }
+
+    async def apply_sender_overload_policy_node(state: MailAgentState) -> Dict[str, Any]:
+        analysis = dict(state.get("analysis") or {})
+        if not analysis:
+            return {}
+        if _is_spam(analysis):
+            return {"analysis": analysis, "priority_overridden_by_policy": False}
+
+        if sender_overload_policy != "force_ignore":
+            return {"analysis": analysis, "priority_overridden_by_policy": False}
+
+        sender_overload = bool(state.get("sender_overload", False))
+        if not sender_overload:
+            return {"analysis": analysis, "priority_overridden_by_policy": False}
+
+        original_priority = str(analysis.get("priority", "")).upper() or "UNKNOWN"
+        analysis["priority_original"] = original_priority
+        analysis["priority"] = "IGNORE"
+        analysis["required_tools"] = []
+        analysis["calendar_event"] = None
+        analysis["reminder"] = None
+        analysis["task"] = None
+        analysis["priority_overridden_by_policy"] = True
+        analysis["priority_override_reason"] = (
+            f"sender_overload_{int(state.get('sender_unread_count_window', 0))}_in_{sender_unread_window_days}d"
+        )
+        _increment_metric("sender_overload_override_count")
+        return {"analysis": analysis, "priority_overridden_by_policy": True}
 
     async def decide_actions_node(state: MailAgentState) -> Dict[str, Any]:
         analysis = state.get("analysis")
@@ -383,11 +455,21 @@ def build_graph(
         try:
             service = fetcher.gmail_services[account_id]
             add_label_ids = [processed_label_id] + tag_label_ids
+            remove_label_ids: List[str] = []
+            if (
+                str(analysis.get("priority", "")).upper() == "IGNORE"
+                and ignore_disposition == "archive"
+            ):
+                remove_label_ids = ["UNREAD", "INBOX"]
+
+            modify_body: Dict[str, Any] = {"addLabelIds": add_label_ids}
+            if remove_label_ids:
+                modify_body["removeLabelIds"] = remove_label_ids
             await asyncio.to_thread(
                 service.users().messages().modify(
                     userId="me",
                     id=email_data.get("id"),
-                    body={"addLabelIds": add_label_ids},
+                    body=modify_body,
                 ).execute
             )
             return {"processed": True}
@@ -405,13 +487,14 @@ def build_graph(
             return "spam_disposition"
         if enforce_both_labels and not state.get("classification_complete", False):
             return END
-        return "decide_actions"
+        return "apply_sender_overload_policy"
 
     builder = StateGraph(MailAgentState)
     builder.add_node("preprocess", preprocess_node)
     builder.add_node("analyze", analyze_node)
     builder.add_node("validate_classification", validate_classification_node)
     builder.add_node("spam_disposition", spam_disposition_node)
+    builder.add_node("apply_sender_overload_policy", apply_sender_overload_policy_node)
     builder.add_node("decide_actions", decide_actions_node)
     builder.add_node("execute_actions", execute_actions_node)
     builder.add_node("apply_tags", apply_tags_node)
@@ -425,11 +508,12 @@ def build_graph(
         route_after_validation,
         {
             "spam_disposition": "spam_disposition",
-            "decide_actions": "decide_actions",
+            "apply_sender_overload_policy": "apply_sender_overload_policy",
             END: END,
         },
     )
     builder.add_edge("spam_disposition", END)
+    builder.add_edge("apply_sender_overload_policy", "decide_actions")
     builder.add_edge("decide_actions", "execute_actions")
     builder.add_edge("execute_actions", "apply_tags")
     builder.add_edge("apply_tags", "mark_processed")

@@ -24,8 +24,8 @@ class EmailCleaner:
     # Retention rules: (priority, category_condition, max_age_days)
     # category_condition: None = any, "protected" = in PROTECTED_CATEGORIES, "unprotected" = not in
     RETENTION_RULES = [
-        # Priority Ignore: Delete immediately
-        {"priority": "Ignore", "category": None, "max_age_days": 0},
+        # Priority Ignore: Delete after grace period.
+        {"priority": "Ignore", "category": None, "max_age_days": 7},
         # Priority Low + Unprotected: Delete after 3 days
         {"priority": "Low", "category": "unprotected", "max_age_days": 3},
         # Priority Low + Protected: Delete after 14 days
@@ -45,6 +45,7 @@ class EmailCleaner:
         self.fetcher = fetcher
         self.deleted_count = 0
         self.skipped_count = 0
+        self.ignore_cleanup_days = int(config.get("ignore_cleanup_days", 7))
         # Cache for label ID -> name mapping per account
         self._label_cache: Dict[str, Dict[str, str]] = {}
 
@@ -111,6 +112,9 @@ class EmailCleaner:
             return False
 
         priority_normalized = priority.title()
+        if priority_normalized == "Ignore":
+            return email_age_days >= float(self.ignore_cleanup_days)
+
         is_protected = self._is_protected_category(category)
 
         for rule in self.RETENTION_RULES:

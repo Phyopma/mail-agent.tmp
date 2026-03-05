@@ -42,12 +42,22 @@ class _DummyService:
 
 
 class _FakeFetcher:
-    def __init__(self):
+    def __init__(self, sender_stats=None, sender_stats_error: bool = False):
         self.calls = []
         self.gmail_services = {"default": _DummyService(self.calls)}
+        self.sender_stats = sender_stats or {
+            "sender_unread_count_window": 0,
+            "sender_overload": False,
+        }
+        self.sender_stats_error = sender_stats_error
 
     async def hydrate_attachment_content(self, account_id, message_id, attachments, max_bytes=None):
         return attachments
+
+    async def get_sender_unread_window_stats(self, account_id, sender_email, days, threshold):
+        if self.sender_stats_error:
+            raise RuntimeError("stats unavailable")
+        return dict(self.sender_stats)
 
 
 class _FakePreprocessor:
@@ -240,3 +250,108 @@ class TestGraphReliability(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(result.get("processed", False))
         self.assertEqual(result.get("spam_disposition_status"), "trashed")
         self.assertEqual(fetcher.calls[0][0], "trash")
+
+    async def test_sender_overload_forces_ignore_and_archives_read(self):
+        fetcher = _FakeFetcher(
+            sender_stats={"sender_unread_count_window": 12, "sender_overload": True}
+        )
+        app = build_graph(
+            preprocessor=_FakePreprocessor(),
+            analyzer=_FakeAnalyzer(
+                {
+                    "is_spam": "NOT_SPAM",
+                    "category": "WORK",
+                    "priority": "HIGH",
+                    "required_tools": ["task"],
+                    "task": {
+                        "title": "Follow up",
+                        "due_date": "2026-03-03T10:00:00Z",
+                    },
+                    "reasoning": "normal workload",
+                    "classification_complete": True,
+                    "classification_source": "llm_text",
+                }
+            ),
+            calendar_agent=_FakeCalendarAgent(),
+            tagger=EmailTagger(),
+            fetcher=fetcher,
+        )
+        state = make_initial_state(
+            {
+                "id": "mail_overload",
+                "account_id": "default",
+                "from": "Sender <sender@example.com>",
+                "sender_email": "sender@example.com",
+                "subject": "Repeated updates",
+                "date": "2026-02-10",
+                "attachments": [],
+            },
+            {
+                "ProcessedByAgent": "LBL_PROCESSED",
+                "Priority/High": "LBL_PRIO_HIGH",
+                "Priority/Ignore": "LBL_PRIO_IGNORE",
+                "Category/Work": "LBL_CAT_WORK",
+            },
+            "UTC",
+        )
+        result = await _invoke_graph(app, state)
+
+        self.assertTrue(result.get("processed", False))
+        self.assertTrue(result.get("analysis", {}).get("priority_overridden_by_policy"))
+        self.assertEqual(result.get("analysis", {}).get("priority"), "IGNORE")
+        self.assertEqual(result.get("analysis", {}).get("required_tools"), [])
+        self.assertEqual(len(fetcher.calls), 1)
+        action, message_id, body = fetcher.calls[0]
+        self.assertEqual(action, "modify")
+        self.assertEqual(message_id, "mail_overload")
+        self.assertIn("LBL_PROCESSED", body["addLabelIds"])
+        self.assertIn("LBL_PRIO_IGNORE", body["addLabelIds"])
+        self.assertIn("LBL_CAT_WORK", body["addLabelIds"])
+        self.assertIn("UNREAD", body["removeLabelIds"])
+        self.assertIn("INBOX", body["removeLabelIds"])
+
+    async def test_sender_stats_failure_fails_open_without_override(self):
+        fetcher = _FakeFetcher(sender_stats_error=True)
+        app = build_graph(
+            preprocessor=_FakePreprocessor(),
+            analyzer=_FakeAnalyzer(
+                {
+                    "is_spam": "NOT_SPAM",
+                    "category": "WORK",
+                    "priority": "HIGH",
+                    "required_tools": [],
+                    "reasoning": "complete",
+                    "classification_complete": True,
+                    "classification_source": "llm_text",
+                }
+            ),
+            calendar_agent=_FakeCalendarAgent(),
+            tagger=EmailTagger(),
+            fetcher=fetcher,
+        )
+        state = make_initial_state(
+            {
+                "id": "mail_fail_open",
+                "account_id": "default",
+                "from": "sender@example.com",
+                "sender_email": "sender@example.com",
+                "subject": "Status",
+                "date": "2026-02-10",
+                "attachments": [],
+            },
+            {
+                "ProcessedByAgent": "LBL_PROCESSED",
+                "Priority/High": "LBL_PRIO_HIGH",
+                "Priority/Ignore": "LBL_PRIO_IGNORE",
+                "Category/Work": "LBL_CAT_WORK",
+            },
+            "UTC",
+        )
+        result = await _invoke_graph(app, state)
+
+        self.assertTrue(result.get("processed", False))
+        self.assertFalse(result.get("analysis", {}).get("priority_overridden_by_policy", False))
+        self.assertEqual(len(fetcher.calls), 1)
+        _, _, body = fetcher.calls[0]
+        self.assertIn("LBL_PRIO_HIGH", body["addLabelIds"])
+        self.assertNotIn("removeLabelIds", body)

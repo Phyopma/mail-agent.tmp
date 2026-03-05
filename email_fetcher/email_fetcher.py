@@ -8,6 +8,7 @@ from datetime import datetime, timedelta
 from typing import List, Dict, Any, Optional, Tuple
 import asyncio
 import base64
+from email.utils import parseaddr
 from email_fetcher.google_service_manager import GoogleServiceManager
 
 
@@ -19,6 +20,7 @@ class EmailFetcher:
         self.processed_tag = "ProcessedByAgent"
         self.gmail_services = {}
         self.label_ids = {}
+        self._sender_unread_stats_cache: Dict[Tuple[str, str, int, int], Dict[str, Any]] = {}
 
     async def setup_gmail(self, credentials_path: str, token_path: str, account_id: str = 'default') -> None:
         """Setup Gmail API client.
@@ -60,14 +62,22 @@ class EmailFetcher:
             query = f"after:{yesterday} -label:{self.processed_tag}"
 
             try:
-                results = await asyncio.to_thread(
-                    gmail_service.users().messages().list(userId='me', q=query).execute
-                )
-                messages = results.get('messages', [])
+                messages: List[Dict[str, Any]] = []
+                next_page_token: Optional[str] = None
+                while True:
+                    list_call = gmail_service.users().messages().list(
+                        userId='me',
+                        q=query,
+                        pageToken=next_page_token,
+                    )
+                    results = await asyncio.to_thread(list_call.execute)
+                    messages.extend(results.get('messages', []))
+                    next_page_token = results.get("nextPageToken")
+                    if not next_page_token:
+                        break
 
                 for i, message in enumerate(messages):
-
-                    if i > 0 and i % 5 == 0:  # Every 5 messages instead of 10
+                    if i > 0 and i % 5 == 0:
                         print(
                             f"Pausing for rate limit... ({i}/{len(messages)})")
                         await asyncio.sleep(2)
@@ -79,6 +89,7 @@ class EmailFetcher:
 
                     payload = msg.get('payload', {})
                     headers = payload.get('headers', [])
+                    sender = self._get_header_value(headers, 'from')
                     body, attachments, has_non_text_content = self._extract_email_content(
                         payload
                     )
@@ -87,9 +98,11 @@ class EmailFetcher:
                         'provider': 'gmail',
                         'account_id': account_id,
                         'subject': self._get_header_value(headers, 'subject'),
-                        'from': self._get_header_value(headers, 'from'),
+                        'from': sender,
+                        'sender_email': self._normalize_sender_email(sender),
                         'date': self._get_header_value(headers, 'date'),
                         'body': body,
+                        'extraction_source': self._infer_body_extraction_source(payload, body),
                         'attachments': attachments,
                         'has_non_text_content': has_non_text_content,
                         'thread_id': msg['threadId']
@@ -100,6 +113,13 @@ class EmailFetcher:
                     f"Error fetching Gmail emails for account {account_id}: {str(e)}")
 
         return all_emails
+
+    def _normalize_sender_email(self, sender: str) -> str:
+        """Extract and normalize sender email from a raw From header value."""
+        parsed_name, parsed_email = parseaddr(sender or "")
+        if parsed_email:
+            return parsed_email.strip().lower()
+        return (sender or "").strip().lower()
 
     def _get_header_value(self, headers: List[Dict[str, Any]], name: str) -> str:
         """Get a specific header value from Gmail payload headers."""
@@ -156,6 +176,28 @@ class EmailFetcher:
             return payload['body']['data']
 
         return ""
+
+    def _infer_body_extraction_source(self, payload: Dict[str, Any], body: str) -> str:
+        """Infer extraction source metadata based on available text parts."""
+        if not body:
+            return "none"
+
+        parts = payload.get("parts", []) or []
+        has_plain = bool(self._find_part_by_mime(parts, "text/plain"))
+        has_html = bool(self._find_part_by_mime(parts, "text/html"))
+        if has_plain and has_html:
+            return "mixed"
+        if has_plain:
+            return "text_plain"
+        if has_html:
+            return "text_html"
+
+        mime_type = str(payload.get("mimeType") or "").lower()
+        if mime_type == "text/plain":
+            return "text_plain"
+        if mime_type == "text/html":
+            return "text_html"
+        return "text_plain"
 
     def _find_part_by_mime(self, parts: List[Dict[str, Any]], mime_type: str) -> Optional[str]:
         """Recursively find the first part matching a MIME type."""
@@ -292,3 +334,70 @@ class EmailFetcher:
         except Exception as e:
             print(f"Error during email fetching: {str(e)}")
             return []
+
+    async def get_sender_unread_window_stats(
+        self,
+        account_id: str,
+        sender_email: str,
+        days: int,
+        threshold: int,
+    ) -> Dict[str, Any]:
+        """Return unread volume stats for a sender in a recent time window.
+
+        Reliability behavior is fail-open: API failures return a non-overload response.
+        """
+        normalized_sender = self._normalize_sender_email(sender_email)
+        cache_key = (account_id, normalized_sender, int(days), int(threshold))
+        cached = self._sender_unread_stats_cache.get(cache_key)
+        if cached is not None:
+            return dict(cached)
+
+        gmail_service = self.gmail_services.get(account_id)
+        if not gmail_service or not normalized_sender:
+            fallback = {
+                "sender_unread_count_window": 0,
+                "sender_overload": False,
+            }
+            self._sender_unread_stats_cache[cache_key] = dict(fallback)
+            return fallback
+
+        query = (
+            f"from:{normalized_sender} newer_than:{int(days)}d "
+            f"is:unread in:inbox -label:{self.processed_tag}"
+        )
+        count = 0
+        next_page_token: Optional[str] = None
+
+        try:
+            while True:
+                list_call = gmail_service.users().messages().list(
+                    userId='me',
+                    q=query,
+                    pageToken=next_page_token,
+                    maxResults=min(500, max(int(threshold), 1)),
+                )
+                result = await asyncio.to_thread(list_call.execute)
+                batch = result.get("messages", [])
+                count += len(batch)
+                if count >= int(threshold):
+                    break
+                next_page_token = result.get("nextPageToken")
+                if not next_page_token:
+                    break
+        except Exception as e:
+            print(
+                f"Warning: failed to fetch sender unread stats for {normalized_sender}: {str(e)}"
+            )
+            stats = {
+                "sender_unread_count_window": 0,
+                "sender_overload": False,
+            }
+            self._sender_unread_stats_cache[cache_key] = dict(stats)
+            return stats
+
+        stats = {
+            "sender_unread_count_window": count,
+            "sender_overload": count >= int(threshold),
+        }
+        self._sender_unread_stats_cache[cache_key] = dict(stats)
+        return stats

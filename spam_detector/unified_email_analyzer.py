@@ -171,148 +171,37 @@ class UnifiedEmailAnalyzer:
         
         # System prompt for email analysis
         self.system_prompt = """
-        You are an expert email analyzer specializing in spam detection, categorization, priority assessment, and tool detection.
-        Your task is to analyze emails holistically and provide accurate, structured analysis based on comprehensive criteria.
-        For spam detection, evaluate these characteristics (multiple indicators suggest higher spam probability):
-        1. Sender Patterns:
-           - Mismatched or suspicious sender domains
-           - Random characters or numbers in sender address
-           - Impersonation of legitimate organizations
-           - Generic or non-personalized sender names
-        2. Content Red Flags:
-           - Unsolicited commercial content or marketing materials
-           - Poor grammar, spelling errors, or unusual formatting
-           - Excessive use of capital letters, punctuation, or urgency words
-           - Generic greetings ("Dear Sir/Madam", "Dear User")
-           - Too-good-to-be-true offers (prizes, inheritance, investments)
-           - Requests for sensitive information or financial transactions
-           - Suspicious URLs or cryptocurrency requests
-           - Pressure tactics ("Act now!", "Limited time only!")
-        For email categorization, use these criteria:
-        - WORK:
-          * Professional communications (clients, colleagues, business partners)
-          * Business-related content (reports, meetings, projects)
-          * Work-specific tools or systems mentioned
-          * Professional tone and formatting
-          * Company domain in sender address
-        - PERSONAL:
-          * Individual communications outside family context
-          * Social activities and events
-          * Personal services or subscriptions
-          * Informal but not family-intimate tone
-          * Personal matters (hobbies, friends, non-family relationships)
-        - FAMILY:
-          * Communications from family members
-          * Family events and gatherings
-          * Shared family resources or plans
-          * Intimate or family-specific tone
-          * Family-related topics (health, household, relatives)
-        - SOCIAL:
-          * Social media notifications and updates
-          * Community group communications
-          * Event invitations and RSVPs
-          * Social network connections and interactions
-          * Platform-specific communications (LinkedIn, Facebook, etc.)
-        - MARKETING:
-          * Promotional offers and advertisements
-          * Product announcements and launches
-          * Sales and discount notifications
-          * Brand newsletters and updates
-          * Marketing campaigns and promotions
-        - SCHOOL:
-          * Academic institution communications
-          * Course-related information
-          * Educational resources and materials
-          * Student services and administrative updates
-          * Academic deadlines and requirements
-        - NEWSLETTER:
-          * Subscription-based content
-          * Regular periodical updates
-          * Industry news and insights
-          * Curated content collections
-          * Publication digests
-        - SHOPPING:
-          * Order confirmations and tracking
-          * Product recommendations
-          * Shopping cart reminders
-          * Purchase receipts and invoices
-          * Shipping notifications
-        For priority assessment, use these specific criteria:
-        - CRITICAL (immediate response needed):
-          * Life-threatening or emergency situations
-          * Security breaches or system compromises
-          * Immediate legal or regulatory compliance issues
-          * Crisis management situations
-        - URGENT (24-hour response needed):
-          * Explicit deadlines within 24 hours
-          * Critical business operations affected
-          * Emergency situations or time-sensitive issues
-          * Legal or compliance deadlines
-        - HIGH (2-3 days response time):
-          * Important business matters with approaching deadlines
-          * Significant opportunities or issues requiring attention
-          * Client or stakeholder escalations
-          * Time-sensitive but not immediate emergency
-        - NORMAL (within a week):
-          * Regular business communications
-          * Standard requests or information
-          * Updates or status reports
-        - LOW (no time pressure):
-          * FYI messages or newsletters
-          * Non-time-sensitive updates
-          * General information sharing
-        - IGNORE (no response needed):
-          * Pure marketing or promotional content
-          * Automated system notifications
-          * Subscription confirmations
-          * Read-only updates
-        For tool detection, be VERY STRICT and conservative about recommending tools. Only suggest tools for emails that CLEARLY require action and contain EXPLICIT information needed for that action. Be extremely cautious about suggesting tools for low-priority or non-work emails.
-        IMPORTANT: The system will ONLY execute tool actions for emails that are:
-        1. HIGH PRIORITY (CRITICAL, URGENT, or HIGH priority levels only)
-        2. From IMPORTANT CATEGORIES (WORK, PERSONAL, or SCHOOL categories only)
-        For all other emails (lower priority or other categories), you should generally recommend NONE for required_tools, as the system will not act on these recommendations anyway.
-        When determining tools, follow these strict guidelines:
-        1. Calendar Events - ONLY recommend when ALL of these conditions are met:
-           - SPECIFIC date and time are clearly mentioned (not vague references)
-           - Email contains sufficient details to create a meaningful calendar entry
-           - Email EXPLICITLY contains a meeting invitation or scheduling request
-           - Purpose of the meeting is clearly defined
-           - The meeting appears to be important and relevant to the recipient
-           If recommended, extract and format all relevant details (title, start/end time, description, attendees)
-        2. Tasks - ONLY recommend when ALL of these conditions are met:
-           - Email EXPLICITLY assigns work items or action items to the recipient
-           - Clear deadlines or timeframes are specified
-           - The task has clear ownership and responsibility
-           - The task appears to be important and relevant to the recipient's work
-           - There is sufficient context to create a meaningful task entry
-           If recommended, extract and format all relevant details (title, due date, priority, description, assignees)
-        3. Reminders - ONLY recommend when ALL of these conditions are met:
-           - Email EXPLICITLY requests follow-up or contains a clear deadline
-           - The reminder is for a specific, concrete action (not vague)
-           - The reminder has a clear timeframe
-           - The reminder appears to be important to the recipient
-           - There is sufficient context to create a meaningful reminder
-           If recommended, extract and format all relevant details (title, due date, priority, description)
-        4. No Tools (NONE) - This should be your DEFAULT recommendation when:
-           - Email is purely informational
-           - Email is low priority (NORMAL, LOW, or IGNORE)
-           - Email is from non-important categories (MARKETING, NEWSLETTER, etc.)
-           - Email lacks specific actionable details
-           - Email is spam or marketing content
-           - There is any uncertainty about whether a tool is truly needed
-        Remember: It is better to recommend NO tools than to recommend inappropriate tools. Be extremely conservative in your recommendations.
-        For each tool requirement:
-        1. First determine if the tool is needed based on the above criteria
-        2. If needed, extract all relevant information in the specified format
-        3. Provide clear reasoning for why the tool was selected
-        4. Ensure all dates and times are in ISO format with respect to the provided timezone
-        5. Include all available details in the tool-specific fields
-        6. When handling dates and times:
-           - Convert all relative time expressions (e.g., 'tomorrow', 'next week') to absolute dates
-           - Use the provided timezone for all datetime conversions
-           - Format all datetime fields in ISO format with timezone offset
-           - Consider daylight saving time when applicable
-        Return a response that matches the EmailAnalysisResult schema exactly.
+        You are a strict email triage engine. Output must match EmailAnalysisResult exactly.
+
+        Decision order (do not skip steps):
+        1) Spam classification (SPAM or NOT_SPAM)
+        2) Category classification (WORK, PERSONAL, FAMILY, SOCIAL, MARKETING, SCHOOL, NEWSLETTER, SHOPPING)
+        3) Priority classification (CRITICAL, URGENT, HIGH, NORMAL, LOW, IGNORE)
+        4) Tool selection (calendar, reminder, task, or none)
+
+        Hard constraints:
+        - Never invent facts missing from the email body/attachments/headers.
+        - If evidence is weak or ambiguous, choose safer outcomes (NOT_SPAM only if clear, and prefer lower priority).
+        - If information is insufficient for a tool action, return required_tools as [].
+        - If date/time is missing or vague, do not create calendar_event/reminder/task payloads.
+        - Only use absolute ISO datetimes with the supplied timezone context.
+        - Sender-overload context is advisory signal only; do not add policy metadata fields not in schema.
+
+        Priority rubric:
+        - CRITICAL: immediate safety/security/compliance emergency.
+        - URGENT: explicit <24h time sensitivity.
+        - HIGH: important near-term action (2-3 days).
+        - NORMAL: routine actionable communication.
+        - LOW: informational with little urgency.
+        - IGNORE: promotions, newsletters, read-only notifications, low-value bulk updates.
+
+        Tool rubric (strict):
+        - Recommend calendar only for explicit meeting/scheduling with specific datetime.
+        - Recommend task only for explicit assigned action with clear ownership.
+        - Recommend reminder only for explicit follow-up/deadline with clear target action.
+        - For all other cases, return [] for required_tools.
+
+        Return valid enum values for is_spam, category, and priority in every response.
         """
 
     def _load_api_keys(self) -> List[str]:
@@ -479,13 +368,20 @@ class UnifiedEmailAnalyzer:
         attachment_summary = self._summarize_attachments_for_prompt(
             email_data.get("attachments", [])
         )
+        sender_email = email_data.get("sender_email") or email_data.get("from", "")
+        unread_window_days = 30
+        if config:
+            unread_window_days = int(config.get("sender_unread_window_days", 30))
         return f"""Analyze this email and provide a structured analysis based on the EmailAnalysisResult schema.
 
 From: {email_data.get('from', '')}
+Sender Email: {sender_email}
 Subject: {email_data.get('subject', '')}
 Received Date: {email_data.get('received_date', '')}
 Body: {email_data.get('body', '')}
 Body Quality: {email_data.get('body_quality', 'unknown')}
+Unread From Sender ({unread_window_days}d): {email_data.get('sender_unread_count_window', 0)}
+Sender Overload Flag: {bool(email_data.get('sender_overload', False))}
 Attachments:
 {attachment_summary}
 
@@ -498,16 +394,22 @@ Always return valid values for is_spam, category, and priority.
         self, email_data: Dict[str, Any], timezone: str
     ) -> List[Dict[str, Any]]:
         """Build multimodal HumanMessage content blocks from hydrated attachments."""
+        unread_window_days = 30
+        if config:
+            unread_window_days = int(config.get("sender_unread_window_days", 30))
         content: List[Dict[str, Any]] = [
             {
                 "type": "text",
                 "text": f"""Analyze this email and attachments. Return valid structured output for EmailAnalysisResult.
 
 From: {email_data.get('from', '')}
+Sender Email: {email_data.get('sender_email') or email_data.get('from', '')}
 Subject: {email_data.get('subject', '')}
 Received Date: {email_data.get('received_date', '')}
 Body (possibly short or empty): {email_data.get('body', '')}
 Body Quality: {email_data.get('body_quality', 'unknown')}
+Unread From Sender ({unread_window_days}d): {email_data.get('sender_unread_count_window', 0)}
+Sender Overload Flag: {bool(email_data.get('sender_overload', False))}
 
 Use attachment content as primary context when body text is weak.
 All datetime fields should be in ISO format with {timezone} timezone.

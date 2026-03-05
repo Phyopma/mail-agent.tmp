@@ -65,6 +65,11 @@ Mail Agent can be configured through `config.json` or environment variables. Gem
 | enforce_both_labels       | MAIL_AGENT_ENFORCE_BOTH_LABELS        | Require both category and priority labels before marking processed |
 | spam_disposition          | MAIL_AGENT_SPAM_DISPOSITION           | Spam handling mode (`trash` or `none`)          |
 | cleanup_spam_failsafe     | MAIL_AGENT_CLEANUP_SPAM_FAILSAFE      | Cleaner job deletes residual spam-labeled mail  |
+| sender_unread_window_days | MAIL_AGENT_SENDER_UNREAD_WINDOW_DAYS  | Sender unread lookback window in days (default: 30) |
+| sender_unread_threshold   | MAIL_AGENT_SENDER_UNREAD_THRESHOLD    | Sender unread threshold for overload (default: 10) |
+| sender_overload_policy    | MAIL_AGENT_SENDER_OVERLOAD_POLICY     | Overload policy (`force_ignore`) |
+| ignore_disposition        | MAIL_AGENT_IGNORE_DISPOSITION         | Handling for ignored mail (`archive` or `none`) |
+| ignore_cleanup_days       | MAIL_AGENT_IGNORE_CLEANUP_DAYS        | Grace period before cleaner deletes ignored mail (default: 7) |
 | multimodal_max_attachments | MAIL_AGENT_MULTIMODAL_MAX_ATTACHMENTS | Max attachments sent to multimodal classifier     |
 | multimodal_max_attachment_bytes | MAIL_AGENT_MULTIMODAL_MAX_ATTACHMENT_BYTES | Max bytes per attachment for multimodal fallback |
 | timezone                  | MAIL_AGENT_TIMEZONE                   | Default timezone for calendar events            |
