@@ -15,6 +15,10 @@ CREATE_SCHEDULER=${CREATE_SCHEDULER:-"true"}
 SCHEDULER_JOB=${SCHEDULER_JOB:-"mail-agent-hourly"}
 SCHEDULE=${SCHEDULE:-"0 * * * *"}
 SCHEDULER_SA=${SCHEDULER_SA:-""}
+ACCOUNTS_FILE=${ACCOUNTS_FILE:-""}
+ACCOUNTS_SECRET_NAME=${ACCOUNTS_SECRET_NAME:-"mail-agent-accounts"}
+ACCOUNTS_SECRET_MOUNT="${ACCOUNTS_SECRET_MOUNT:-/app/secrets/accounts/accounts.json}"
+HAS_ACCOUNTS_SECRET="false"
 
 IMAGE_URI="$REGION-docker.pkg.dev/$PROJECT_ID/$REPO/$IMAGE_NAME:$TAG"
 
@@ -83,6 +87,18 @@ else
   exit 1
 fi
 
+if [[ -n "$ACCOUNTS_FILE" ]]; then
+  if [[ -f "$ACCOUNTS_FILE" ]]; then
+    echo "Updating account config..."
+    gcloud secrets describe "$ACCOUNTS_SECRET_NAME" || gcloud secrets create "$ACCOUNTS_SECRET_NAME"
+    gcloud secrets versions add "$ACCOUNTS_SECRET_NAME" --data-file="$ACCOUNTS_FILE"
+    HAS_ACCOUNTS_SECRET="true"
+  else
+    echo "ACCOUNTS_FILE is set but file was not found: $ACCOUNTS_FILE"
+    exit 1
+  fi
+fi
+
 # Create/update the main job with minimal config, then set secrets via CLI
 echo "Preparing Job configuration..."
 
@@ -113,8 +129,15 @@ SECRET_MOUNTS="/app/secrets/gmail-creds/gmail_credentials.json=gmail-credentials
 if gcloud secrets describe uci-token >/dev/null 2>&1; then
   SECRET_MOUNTS="$SECRET_MOUNTS,/app/secrets/uci-token/uci_token.pickle=uci-token:latest"
 fi
+if [[ "$HAS_ACCOUNTS_SECRET" == "true" ]]; then
+  SECRET_MOUNTS="$SECRET_MOUNTS,${ACCOUNTS_SECRET_MOUNT}=${ACCOUNTS_SECRET_NAME}:latest"
+fi
 gcloud run jobs update "$JOB_NAME" --region "$REGION" \
   --set-secrets="$SECRET_MOUNTS"
+if [[ "$HAS_ACCOUNTS_SECRET" == "true" ]]; then
+  gcloud run jobs update "$JOB_NAME" --region "$REGION" \
+    --set-env-vars "MAIL_AGENT_ACCOUNTS_FILE=$ACCOUNTS_SECRET_MOUNT"
+fi
 echo "Deployed Cloud Run Job: $JOB_NAME"
 
 # Deploy Cleanup Job
@@ -134,6 +157,10 @@ echo "Configuring secrets for cleanup job..."
 gcloud run jobs update "$CLEANUP_JOB_NAME" --region "$REGION" --clear-secrets
 gcloud run jobs update "$CLEANUP_JOB_NAME" --region "$REGION" \
   --set-secrets="$SECRET_MOUNTS"
+if [[ "$HAS_ACCOUNTS_SECRET" == "true" ]]; then
+  gcloud run jobs update "$CLEANUP_JOB_NAME" --region "$REGION" \
+    --set-env-vars "MAIL_AGENT_ACCOUNTS_FILE=$ACCOUNTS_SECRET_MOUNT"
+fi
 echo "Deployed Cloud Run Job: $CLEANUP_JOB_NAME"
 
 # Configure Schedulers
