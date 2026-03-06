@@ -4,7 +4,6 @@ This module handles fetching unprocessed emails from Gmail accounts.
 It supports async operations and provides a standardized output format for LangGraph.
 """
 
-from datetime import datetime, timedelta
 from typing import List, Dict, Any, Optional, Tuple
 import asyncio
 import base64
@@ -51,15 +50,13 @@ class EmailFetcher:
                 "No Gmail services initialized. Call setup_gmail() first.")
 
         all_emails = []
-        yesterday = (datetime.utcnow() - timedelta(days=1)
-                     ).strftime('%Y/%m/%d')
 
         for account_id, gmail_service in self.gmail_services.items():
             print(f"Fetching Gmail emails for account {account_id}...")
             # Query to filter emails:
-            # - after:yesterday - only emails from the last 24 hours
+            # - newer_than:1d - only emails from the last 24 hours
             # - -label:ProcessedByAgent - exclude emails already processed
-            query = f"after:{yesterday} -label:{self.processed_tag}"
+            query = f"newer_than:1d -label:{self.processed_tag}"
 
             try:
                 messages: List[Dict[str, Any]] = []

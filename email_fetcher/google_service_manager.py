@@ -136,6 +136,30 @@ class GoogleServiceManager:
         except Exception as e:
             raise Exception(f"Error setting up Google services: {str(e)}")
 
+    async def setup_gmail_watch(
+        self,
+        credentials_path: str,
+        token_path: str,
+        topic_name: str,
+        account_id: str = 'default',
+        label_ids: Optional[list] = None,
+        label_filter_action: str = 'include',
+    ) -> Dict[str, Any]:
+        """Register or renew a Gmail watch for the specified account."""
+        await self.setup_services(credentials_path, token_path, account_id)
+        gmail_service = self.get_service(account_id, 'gmail')
+        if not gmail_service:
+            raise ValueError(f"Gmail service not initialized for account {account_id}")
+
+        body: Dict[str, Any] = {'topicName': topic_name}
+        if label_ids:
+            body['labelIds'] = label_ids
+            body['labelFilterAction'] = label_filter_action
+
+        return await asyncio.to_thread(
+            gmail_service.users().watch(userId='me', body=body).execute
+        )
+
     async def _get_credentials(self, credentials_path: str, token_path: str) -> Credentials:
         """Get or refresh Google API credentials.
 

@@ -125,6 +125,14 @@ def build_graph(
             return False
         return str(analysis.get("is_spam", "")).upper() == "SPAM"
 
+    def _classification_has_valid_fields(analysis: Dict[str, Any]) -> bool:
+        if not analysis:
+            return False
+        is_spam = str(analysis.get("is_spam", "")).upper()
+        category = str(analysis.get("category", "")).upper()
+        priority = str(analysis.get("priority", "")).upper()
+        return is_spam in {"SPAM", "NOT_SPAM"} and bool(category and priority)
+
     def _expected_tags(analysis: Dict[str, Any]) -> List[str]:
         priority = str(analysis.get("priority", "")).title()
         category = str(analysis.get("category", "")).title()
@@ -224,8 +232,10 @@ def build_graph(
             ),
             "sender_overload": bool(sender_stats.get("sender_overload", False)),
             "classification_source": classification_source,
-            "classification_complete": bool(
-                analysis.get("classification_complete", False)
+            "classification_complete": (
+                bool(analysis.get("classification_complete"))
+                if isinstance(analysis.get("classification_complete"), bool)
+                else _classification_has_valid_fields(analysis)
             ),
         }
 
@@ -242,7 +252,11 @@ def build_graph(
                 )
             }
 
-        is_complete = bool(analysis.get("classification_complete", False))
+        is_complete = (
+            bool(analysis.get("classification_complete"))
+            if isinstance(analysis.get("classification_complete"), bool)
+            else _classification_has_valid_fields(analysis)
+        )
         if not is_complete:
             _increment_metric("classification_incomplete_count")
             errors = state.get("errors") or []

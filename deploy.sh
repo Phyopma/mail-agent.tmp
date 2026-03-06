@@ -11,14 +11,26 @@ REPO=${REPO:-"mail-agent"}
 IMAGE_NAME=${IMAGE_NAME:-"mail-agent"}
 TAG=${TAG:-"latest"}
 JOB_NAME=${JOB_NAME:-"mail-agent-job"}
+TRIGGER_SERVICE_NAME=${TRIGGER_SERVICE_NAME:-"mail-agent-trigger"}
+TRIGGER_QUEUE_NAME=${TRIGGER_QUEUE_NAME:-"mail-agent-trigger"}
+TRIGGER_SUBSCRIPTION_NAME=${TRIGGER_SUBSCRIPTION_NAME:-"mail-agent-gmail-watch-push"}
+WATCH_JOB_NAME=${WATCH_JOB_NAME:-"mail-agent-watch-renew"}
 CREATE_SCHEDULER=${CREATE_SCHEDULER:-"true"}
 SCHEDULER_JOB=${SCHEDULER_JOB:-"mail-agent-hourly"}
 SCHEDULE=${SCHEDULE:-"0 * * * *"}
+WATCH_SCHEDULER_JOB=${WATCH_SCHEDULER_JOB:-"mail-agent-watch-renew-daily"}
+WATCH_RENEW_SCHEDULE=${WATCH_RENEW_SCHEDULE:-"0 6 * * *"}
 SCHEDULER_SA=${SCHEDULER_SA:-""}
+PUSH_ENABLED=${PUSH_ENABLED:-"true"}
+GMAIL_WATCH_TOPIC=${GMAIL_WATCH_TOPIC:-"projects/$PROJECT_ID/topics/mail-agent-gmail-watch"}
+TRIGGER_DEBOUNCE_SECONDS=${TRIGGER_DEBOUNCE_SECONDS:-"60"}
+TRIGGER_MIN_EXECUTION_GAP_SECONDS=${TRIGGER_MIN_EXECUTION_GAP_SECONDS:-"120"}
+TRIGGER_SHARED_SECRET=${TRIGGER_SHARED_SECRET:-$(python3 -c 'import secrets; print(secrets.token_hex(32))')}
 ACCOUNTS_FILE=${ACCOUNTS_FILE:-""}
 ACCOUNTS_SECRET_NAME=${ACCOUNTS_SECRET_NAME:-"mail-agent-accounts"}
 ACCOUNTS_SECRET_MOUNT="${ACCOUNTS_SECRET_MOUNT:-/app/secrets/accounts/accounts.json}"
 HAS_ACCOUNTS_SECRET="false"
+GMAIL_WATCH_TOPIC_NAME="${GMAIL_WATCH_TOPIC##*/}"
 
 # Auto-detect local accounts.json when no explicit ACCOUNTS_FILE is configured.
 if [[ -z "$ACCOUNTS_FILE" && -f "accounts.json" ]]; then
@@ -31,6 +43,17 @@ if [[ "$PROJECT_ID" == "YOUR_PROJECT_ID" ]]; then
   echo "Please set PROJECT_ID environment variable."
   exit 1
 fi
+
+echo "Ensuring required Google Cloud APIs are enabled..."
+gcloud services enable \
+  artifactregistry.googleapis.com \
+  cloudbuild.googleapis.com \
+  cloudtasks.googleapis.com \
+  pubsub.googleapis.com \
+  run.googleapis.com \
+  cloudscheduler.googleapis.com \
+  secretmanager.googleapis.com \
+  --quiet
 
 # Ensure artifact registry repo exists
 echo "Checking Artifact Registry repository..."
@@ -46,9 +69,14 @@ gcloud auth configure-docker "$REGION-docker.pkg.dev" --quiet
 
 if docker info >/dev/null 2>&1; then
   echo "Building Docker image for linux/amd64..."
-  docker build --platform linux/amd64 --provenance=false -t "$IMAGE_URI" .
-  echo "Pushing Docker image..."
-  docker push "$IMAGE_URI"
+  if docker build --platform linux/amd64 -t "$IMAGE_URI" .; then
+    echo "Pushing Docker image..."
+    docker push "$IMAGE_URI"
+  else
+    echo "Local Docker build failed. Falling back to Cloud Build..."
+    gcloud services enable cloudbuild.googleapis.com --quiet
+    gcloud builds submit --tag "$IMAGE_URI" .
+  fi
 else
   echo "Docker daemon unavailable. Falling back to Cloud Build..."
   gcloud services enable cloudbuild.googleapis.com --quiet
@@ -125,6 +153,16 @@ gcloud projects add-iam-policy-binding "$PROJECT_ID" \
   --role="roles/secretmanager.secretAccessor" \
   --condition=None \
   --quiet
+gcloud projects add-iam-policy-binding "$PROJECT_ID" \
+  --member="serviceAccount:$COMPUTE_SA" \
+  --role="roles/cloudtasks.enqueuer" \
+  --condition=None \
+  --quiet
+gcloud projects add-iam-policy-binding "$PROJECT_ID" \
+  --member="serviceAccount:$COMPUTE_SA" \
+  --role="roles/run.developer" \
+  --condition=None \
+  --quiet
 
 # Configure secrets with distinct mount directories per secret to satisfy Cloud Run
 # mount constraints while preserving app path resolution fallbacks.
@@ -138,14 +176,15 @@ if [[ "$HAS_ACCOUNTS_SECRET" == "true" ]]; then
   SECRET_MOUNTS="$SECRET_MOUNTS,${ACCOUNTS_SECRET_MOUNT}=${ACCOUNTS_SECRET_NAME}:latest"
 fi
 SECRET_MOUNTS="$SECRET_MOUNTS,/app/secrets/gemini-api-key=gemini-api-key:latest"
+COMMON_ENV_VARS="PROJECT_ID=$PROJECT_ID,GOOGLE_CLOUD_PROJECT=$PROJECT_ID,REGION=$REGION,GOOGLE_API_KEY_FILE=/app/secrets/gemini-api-key,MAIL_AGENT_PUSH_ENABLED=$PUSH_ENABLED,MAIL_AGENT_GMAIL_WATCH_TOPIC=$GMAIL_WATCH_TOPIC,MAIL_AGENT_TRIGGER_TASKS_QUEUE=$TRIGGER_QUEUE_NAME,MAIL_AGENT_TRIGGER_JOB_NAME=$JOB_NAME,MAIL_AGENT_TRIGGER_DEBOUNCE_SECONDS=$TRIGGER_DEBOUNCE_SECONDS,MAIL_AGENT_TRIGGER_MIN_EXECUTION_GAP_SECONDS=$TRIGGER_MIN_EXECUTION_GAP_SECONDS,MAIL_AGENT_WATCH_RENEW_SCHEDULE=$WATCH_RENEW_SCHEDULE"
+if [[ "$HAS_ACCOUNTS_SECRET" == "true" ]]; then
+  COMMON_ENV_VARS="$COMMON_ENV_VARS,MAIL_AGENT_ACCOUNTS_FILE=$ACCOUNTS_SECRET_MOUNT"
+fi
+TRIGGER_ENV_VARS="$COMMON_ENV_VARS,MAIL_AGENT_TRIGGER_SHARED_SECRET=$TRIGGER_SHARED_SECRET"
 gcloud run jobs update "$JOB_NAME" --region "$REGION" \
   --set-secrets="$SECRET_MOUNTS"
 gcloud run jobs update "$JOB_NAME" --region "$REGION" \
-  --set-env-vars "GOOGLE_API_KEY_FILE=/app/secrets/gemini-api-key"
-if [[ "$HAS_ACCOUNTS_SECRET" == "true" ]]; then
-  gcloud run jobs update "$JOB_NAME" --region "$REGION" \
-    --set-env-vars "MAIL_AGENT_ACCOUNTS_FILE=$ACCOUNTS_SECRET_MOUNT"
-fi
+  --set-env-vars "$COMMON_ENV_VARS"
 echo "Deployed Cloud Run Job: $JOB_NAME"
 
 # Deploy Cleanup Job
@@ -166,12 +205,69 @@ gcloud run jobs update "$CLEANUP_JOB_NAME" --region "$REGION" --clear-secrets
 gcloud run jobs update "$CLEANUP_JOB_NAME" --region "$REGION" \
   --set-secrets="$SECRET_MOUNTS"
 gcloud run jobs update "$CLEANUP_JOB_NAME" --region "$REGION" \
-  --set-env-vars "GOOGLE_API_KEY_FILE=/app/secrets/gemini-api-key"
-if [[ "$HAS_ACCOUNTS_SECRET" == "true" ]]; then
-  gcloud run jobs update "$CLEANUP_JOB_NAME" --region "$REGION" \
-    --set-env-vars "MAIL_AGENT_ACCOUNTS_FILE=$ACCOUNTS_SECRET_MOUNT"
-fi
+  --set-env-vars "$COMMON_ENV_VARS"
 echo "Deployed Cloud Run Job: $CLEANUP_JOB_NAME"
+
+echo "Ensuring Cloud Tasks queue exists..."
+if ! gcloud tasks queues describe "$TRIGGER_QUEUE_NAME" --location "$REGION" >/dev/null 2>&1; then
+  gcloud tasks queues create "$TRIGGER_QUEUE_NAME" --location "$REGION"
+fi
+
+if [[ "$PUSH_ENABLED" == "true" ]]; then
+  echo "Ensuring Gmail watch Pub/Sub topic exists..."
+  if ! gcloud pubsub topics describe "$GMAIL_WATCH_TOPIC_NAME" >/dev/null 2>&1; then
+    gcloud pubsub topics create "$GMAIL_WATCH_TOPIC_NAME"
+  fi
+  gcloud pubsub topics add-iam-policy-binding "$GMAIL_WATCH_TOPIC_NAME" \
+    --member="serviceAccount:gmail-api-push@system.gserviceaccount.com" \
+    --role="roles/pubsub.publisher" \
+    --quiet
+fi
+
+echo "Deploying trigger service..."
+gcloud run deploy "$TRIGGER_SERVICE_NAME" \
+  --image "$IMAGE_URI" \
+  --region "$REGION" \
+  --allow-unauthenticated \
+  --command python \
+  --args=-m,mail_agent.trigger_service \
+  --set-secrets="$SECRET_MOUNTS" \
+  --set-env-vars "$TRIGGER_ENV_VARS"
+TRIGGER_SERVICE_URL=$(gcloud run services describe "$TRIGGER_SERVICE_NAME" --region "$REGION" --format='value(status.url)')
+TRIGGER_ENV_VARS="$TRIGGER_ENV_VARS,MAIL_AGENT_TRIGGER_SERVICE_URL=$TRIGGER_SERVICE_URL"
+gcloud run services update "$TRIGGER_SERVICE_NAME" --region "$REGION" \
+  --set-env-vars "$TRIGGER_ENV_VARS"
+echo "Deployed Cloud Run Service: $TRIGGER_SERVICE_NAME ($TRIGGER_SERVICE_URL)"
+
+if [[ "$PUSH_ENABLED" == "true" ]]; then
+  echo "Configuring Gmail watch push subscription..."
+  if gcloud pubsub subscriptions describe "$TRIGGER_SUBSCRIPTION_NAME" >/dev/null 2>&1; then
+    gcloud pubsub subscriptions update "$TRIGGER_SUBSCRIPTION_NAME" \
+      --push-endpoint="$TRIGGER_SERVICE_URL/pubsub/gmail"
+  else
+    gcloud pubsub subscriptions create "$TRIGGER_SUBSCRIPTION_NAME" \
+      --topic="$GMAIL_WATCH_TOPIC_NAME" \
+      --push-endpoint="$TRIGGER_SERVICE_URL/pubsub/gmail"
+  fi
+fi
+
+echo "Preparing Watch Renew Job configuration..."
+if ! gcloud run jobs describe "$WATCH_JOB_NAME" --region "$REGION" 2>/dev/null; then
+  gcloud run jobs create "$WATCH_JOB_NAME" --image "$IMAGE_URI" --region "$REGION" --command=python --args=-m,mail_agent.main,--renew-watches
+else
+  gcloud run jobs update "$WATCH_JOB_NAME" --image "$IMAGE_URI" --region "$REGION" --command=python --args=-m,mail_agent.main,--renew-watches
+fi
+gcloud run jobs update "$WATCH_JOB_NAME" --region "$REGION" --clear-secrets
+gcloud run jobs update "$WATCH_JOB_NAME" --region "$REGION" \
+  --set-secrets="$SECRET_MOUNTS"
+WATCH_ENV_VARS="$COMMON_ENV_VARS,MAIL_AGENT_TRIGGER_SERVICE_URL=$TRIGGER_SERVICE_URL"
+gcloud run jobs update "$WATCH_JOB_NAME" --region "$REGION" \
+  --set-env-vars "$WATCH_ENV_VARS"
+echo "Deployed Cloud Run Job: $WATCH_JOB_NAME"
+if [[ "$PUSH_ENABLED" == "true" ]]; then
+  echo "Running initial Gmail watch registration..."
+  gcloud run jobs execute "$WATCH_JOB_NAME" --region "$REGION" --wait
+fi
 
 # Configure Schedulers
 if [[ "$CREATE_SCHEDULER" == "true" ]]; then
@@ -224,6 +320,25 @@ if [[ "$CREATE_SCHEDULER" == "true" ]]; then
       --oauth-service-account-email="$SCHEDULER_SA"
   fi
   echo "Cleanup scheduler job configured: $CLEANUP_SCHEDULER_JOB ($CLEANUP_SCHEDULE)"
+
+  WATCH_SCHEDULER_URI="https://$REGION-run.googleapis.com/apis/run.googleapis.com/v1/namespaces/$PROJECT_ID/jobs/${WATCH_JOB_NAME}:run"
+  echo "Configuring Cloud Scheduler for watch renewal job..."
+  if gcloud scheduler jobs describe "$WATCH_SCHEDULER_JOB" --location "$REGION" 2>/dev/null; then
+    gcloud scheduler jobs update http "$WATCH_SCHEDULER_JOB" \
+      --location="$REGION" \
+      --schedule="$WATCH_RENEW_SCHEDULE" \
+      --uri="$WATCH_SCHEDULER_URI" \
+      --http-method=POST \
+      --oauth-service-account-email="$SCHEDULER_SA"
+  else
+    gcloud scheduler jobs create http "$WATCH_SCHEDULER_JOB" \
+      --location="$REGION" \
+      --schedule="$WATCH_RENEW_SCHEDULE" \
+      --uri="$WATCH_SCHEDULER_URI" \
+      --http-method=POST \
+      --oauth-service-account-email="$SCHEDULER_SA"
+  fi
+  echo "Watch renewal scheduler configured: $WATCH_SCHEDULER_JOB ($WATCH_RENEW_SCHEDULE)"
 fi
 
 echo "Deployment complete!"

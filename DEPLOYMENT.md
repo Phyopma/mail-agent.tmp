@@ -146,3 +146,38 @@ If you encounter issues during deployment, consider the following troubleshootin
 6. **Configuration Files**: Double-check your `config.json` and `accounts.json` files for any misconfigurations.
 
 If the issue persists, consult the application's documentation or seek help from the community.
+
+## Hybrid push deployment
+
+The deployment flow now provisions four runtime surfaces:
+- `mail-agent-job`: existing processing job, still scheduled hourly as a fallback.
+- `mail-agent-cleanup`: retention cleanup job.
+- `mail-agent-trigger`: Cloud Run service that receives Gmail Pub/Sub push notifications and debounces execution with Cloud Tasks.
+- `mail-agent-watch-renew`: Cloud Run job that renews Gmail `users.watch` subscriptions for every configured account.
+
+### New environment variables
+
+- `MAIL_AGENT_PUSH_ENABLED`
+- `MAIL_AGENT_GMAIL_WATCH_TOPIC`
+- `MAIL_AGENT_TRIGGER_TASKS_QUEUE`
+- `MAIL_AGENT_TRIGGER_SERVICE_URL`
+- `MAIL_AGENT_TRIGGER_JOB_NAME`
+- `MAIL_AGENT_TRIGGER_DEBOUNCE_SECONDS`
+- `MAIL_AGENT_TRIGGER_MIN_EXECUTION_GAP_SECONDS`
+- `MAIL_AGENT_WATCH_RENEW_SCHEDULE`
+- `MAIL_AGENT_CLASSIFICATION_REPAIR_ENABLED`
+- `MAIL_AGENT_TOOL_EXTRACTION_ENABLED`
+
+### Operational notes
+
+- Gmail push is trigger-only in v1. The processing job still performs the actual fetch and relies on Gmail labels as the source of truth.
+- Cloud Tasks task names are time-bucketed per account to coalesce bursts during the debounce window.
+- Watch renewal logs `historyId` and `expiration` per account so failures are visible in Cloud Logging.
+
+### Required IAM and push prerequisites
+
+For the hybrid trigger path to function correctly:
+- the Gmail push publisher `gmail-api-push@system.gserviceaccount.com` must have `roles/pubsub.publisher` on the watch topic
+- the runtime service account must have `roles/cloudtasks.enqueuer` and `roles/run.developer`
+- deployment should execute the watch-renew job once after rollout so watches exist before the first daily renewal window
+- the trigger service protects `POST /internal/execute/{account_id}` with `MAIL_AGENT_TRIGGER_SHARED_SECRET`, which Cloud Tasks forwards in an internal header

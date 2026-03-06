@@ -83,3 +83,31 @@ For production deployment, see [DEPLOYMENT.md](DEPLOYMENT.md).
 ## License
 
 [MIT License](LICENSE)
+
+## Hybrid trigger mode
+
+Mail Agent now supports a hybrid execution model:
+- Gmail push notifications are used for near-real-time triggering.
+- The existing hourly Cloud Scheduler job remains as a fallback sweep.
+- Push notifications do not change message retrieval semantics; `mail-agent-job` still fetches mail with the existing Gmail query and labeling rules.
+
+### Trigger service
+
+A new Cloud Run service module, `mail_agent.trigger_service`, exposes:
+- `POST /pubsub/gmail`: accepts Gmail Pub/Sub push notifications and debounces execution per account.
+- `POST /internal/execute/{account_id}`: launches `mail-agent-job` only when no matching account run is active or too recent.
+- `GET /healthz`: health check endpoint.
+
+### Watch renewal
+
+Gmail watches must be renewed periodically. Use:
+
+```bash
+python -m mail_agent.main --renew-watches
+```
+
+The deployment script now provisions a dedicated Cloud Run Job plus a daily scheduler for watch renewal.
+
+### Trigger security and prerequisites
+
+The trigger receiver keeps `/pubsub/gmail` public for Pub/Sub delivery, but protects `/internal/execute/{account_id}` with a shared internal token carried by Cloud Tasks. Gmail push also requires the Pub/Sub topic to grant publish access to `gmail-api-push@system.gserviceaccount.com`.

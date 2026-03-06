@@ -135,6 +135,46 @@ class TestGraphReliability(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(result.get("processed", False))
         self.assertEqual(fetcher.calls, [])
 
+    async def test_complete_classification_without_explicit_complete_flag_still_processed(self):
+        fetcher = _FakeFetcher()
+        app = build_graph(
+            preprocessor=_FakePreprocessor(),
+            analyzer=_FakeAnalyzer(
+                {
+                    "is_spam": "NOT_SPAM",
+                    "category": "WORK",
+                    "priority": "HIGH",
+                    "required_tools": [],
+                    "reasoning": "flag omitted",
+                    # Explicit flag intentionally omitted to verify fallback behavior.
+                    "classification_source": "llm_text",
+                }
+            ),
+            calendar_agent=_FakeCalendarAgent(),
+            tagger=EmailTagger(),
+            fetcher=fetcher,
+        )
+        state = make_initial_state(
+            {
+                "id": "mail_missing_flag",
+                "account_id": "default",
+                "from": "boss@example.com",
+                "subject": "Status",
+                "date": "2026-02-10",
+                "attachments": [],
+            },
+            {
+                "ProcessedByAgent": "LBL_PROCESSED",
+                "Priority/High": "LBL_PRIO_HIGH",
+                "Category/Work": "LBL_CAT_WORK",
+            },
+            "UTC",
+        )
+        result = await _invoke_graph(app, state)
+        self.assertTrue(result.get("classification_complete"))
+        self.assertTrue(result.get("processed", False))
+        self.assertEqual(len(fetcher.calls), 1)
+
     async def test_complete_non_spam_gets_processed_with_both_labels(self):
         fetcher = _FakeFetcher()
         app = build_graph(

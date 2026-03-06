@@ -133,3 +133,31 @@ flowchart LR
 ## Known Risks
 - Gemini structured output may fail validation for rare inputs; analyzer now falls back to deterministic heuristics to keep classification complete.
 - Gmail payloads vary; multipart parsing is best-effort and may still miss edge cases.
+
+## Hybrid trigger architecture
+
+The runtime model now combines two entry paths into the same processing graph:
+- Scheduled fallback: the hourly `mail-agent-job` continues to fetch messages from the last 24 hours that do not already have `ProcessedByAgent`.
+- Push-triggered execution: Gmail `users.watch` notifications hit `mail_agent.trigger_service`, which debounces by account with Cloud Tasks and then launches the same Cloud Run Job with `MAIL_AGENT_TARGET_ACCOUNT_ID` set.
+
+### Trigger flow
+
+1. Gmail sends a Pub/Sub notification for a watched mailbox.
+2. Pub/Sub pushes to `POST /pubsub/gmail` on the trigger service.
+3. The trigger service maps `emailAddress` to an account config entry and enqueues one delayed Cloud Task for that account and debounce window.
+4. `POST /internal/execute/{account_id}` checks Cloud Run executions for an active or too-recent account run.
+5. If the execution gap is clear, the service launches `mail-agent-job` with `MAIL_AGENT_TARGET_ACCOUNT_ID` so only that mailbox is processed.
+
+### Analysis pipeline constraints
+
+The analyzer remains a strict multi-stage pipeline:
+- classification-only pass first
+- repair pass only for incomplete classification outputs
+- tool extraction only after complete non-spam classification
+- heuristic fallback as the final guarantee
+
+This preserves `classification_source`, `classification_complete`, spam branching, and processed-label invariants while allowing near-real-time trigger entry.
+
+### Trigger endpoint protection
+
+`/pubsub/gmail` remains externally reachable for Pub/Sub push delivery. `/internal/execute/{account_id}` is treated as an internal path and requires `MAIL_AGENT_TRIGGER_SHARED_SECRET`, forwarded by Cloud Tasks in an internal header.

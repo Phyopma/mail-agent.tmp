@@ -16,6 +16,7 @@ class _DummyRequest:
 class _FakeMessagesApi:
     def __init__(self):
         self.main_list_calls = []
+        self.main_queries = []
         self.sender_list_calls = []
         self.sender_query_call_count = 0
 
@@ -40,6 +41,7 @@ class _FakeMessagesApi:
             return _DummyRequest({})
 
         self.main_list_calls.append(pageToken)
+        self.main_queries.append(query)
         if pageToken is None:
             return _DummyRequest(
                 {
@@ -179,6 +181,21 @@ class TestEmailFetcherNonText(unittest.IsolatedAsyncioTestCase):
         )
         self.assertEqual(emails[0]["sender_email"], "alice@example.com")
         self.assertEqual(emails[1]["sender_email"], "sender@example.com")
+
+    async def test_fetch_gmail_emails_queries_only_unprocessed_last_day_messages(self) -> None:
+        fetcher = EmailFetcher()
+        fake_service = _FakeGmailService()
+        fetcher.gmail_services = {"default": fake_service}
+
+        await fetcher.fetch_gmail_emails()
+
+        self.assertEqual(
+            fake_service.users().messages().main_queries,
+            [
+                "newer_than:1d -label:ProcessedByAgent",
+                "newer_than:1d -label:ProcessedByAgent",
+            ],
+        )
 
     async def test_sender_unread_window_stats_threshold_and_cache(self) -> None:
         fetcher = EmailFetcher()

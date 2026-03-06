@@ -152,6 +152,12 @@ class UnifiedEmailAnalyzer:
         self.enable_multimodal_fallback = bool(
             config.get("enable_multimodal_fallback", True) if config else True
         )
+        self.enable_classification_repair = bool(
+            config.get("classification_repair_enabled", True) if config else True
+        )
+        self.enable_tool_extraction = bool(
+            config.get("tool_extraction_enabled", True) if config else True
+        )
         self.multimodal_max_attachments = int(
             config.get("multimodal_max_attachments", 3) if config else 3
         )
@@ -202,6 +208,39 @@ class UnifiedEmailAnalyzer:
         - For all other cases, return [] for required_tools.
 
         Return valid enum values for is_spam, category, and priority in every response.
+        """
+        self.classification_system_prompt = """
+        You are a strict email classification engine. Output must match EmailAnalysisResult exactly.
+
+        Your primary job is to determine:
+        1) is_spam
+        2) category
+        3) priority
+
+        For this pass:
+        - Always return valid values for is_spam, category, and priority.
+        - Set required_tools to [] unless the email clearly requires an action.
+        - Leave calendar_event, reminder, and task as null unless absolutely certain.
+        - Never invent facts.
+        """
+        self.classification_repair_system_prompt = """
+        You are repairing an incomplete email classification result.
+
+        Return a complete EmailAnalysisResult with valid values for:
+        - is_spam
+        - category
+        - priority
+
+        Keep the classification conservative and evidence-based.
+        Set required_tools to [] unless they are explicit from the email.
+        """
+        self.tool_system_prompt = """
+        You are extracting tool actions for an already-classified email.
+
+        Return EmailAnalysisResult JSON.
+        Keep the supplied is_spam, category, and priority unchanged.
+        Only populate required_tools and calendar_event/reminder/task when the email explicitly requires them.
+        Otherwise return required_tools as [] and tool payloads as null.
         """
 
     def _load_api_keys(self) -> List[str]:
@@ -417,6 +456,53 @@ All datetime fields should be in ISO format with {timezone} timezone.
 Always return valid values for is_spam, category, and priority.
 """
 
+    def _build_classification_repair_prompt(
+        self,
+        email_data: Dict[str, Any],
+        timezone: str,
+        partial_result: Dict[str, Any],
+    ) -> str:
+        return f"""Repair this incomplete email classification and return a complete EmailAnalysisResult.
+
+From: {email_data.get('from', '')}
+Sender Email: {email_data.get('sender_email') or email_data.get('from', '')}
+Subject: {email_data.get('subject', '')}
+Received Date: {email_data.get('received_date', '')}
+Body: {email_data.get('body', '')}
+Body Quality: {email_data.get('body_quality', 'unknown')}
+Timezone: {timezone}
+
+Current partial result:
+{partial_result}
+
+Return valid values for is_spam, category, and priority.
+"""
+
+    def _build_tool_extraction_prompt(
+        self,
+        email_data: Dict[str, Any],
+        timezone: str,
+        classification_result: Dict[str, Any],
+    ) -> str:
+        return f"""Extract tool actions for this classified email and return EmailAnalysisResult JSON.
+
+Classification to preserve:
+- is_spam: {classification_result.get('is_spam', '')}
+- category: {classification_result.get('category', '')}
+- priority: {classification_result.get('priority', '')}
+
+Email context:
+From: {email_data.get('from', '')}
+Sender Email: {email_data.get('sender_email') or email_data.get('from', '')}
+Subject: {email_data.get('subject', '')}
+Received Date: {email_data.get('received_date', '')}
+Body: {email_data.get('body', '')}
+Timezone: {timezone}
+
+Only add tools when the email explicitly requires an action with enough detail.
+Otherwise return required_tools as [].
+"""
+
     def _build_multimodal_content(
         self, email_data: Dict[str, Any], timezone: str
     ) -> List[Dict[str, Any]]:
@@ -580,6 +666,86 @@ Always return valid values for is_spam, category, and priority.
         }
         return self._finalize_analysis_result(fallback, "heuristic")
 
+    async def _run_text_classification_pass(
+        self, email_data: Dict[str, Any], timezone: str, allow_repair: bool = True
+    ) -> Optional[Dict[str, Any]]:
+        text_prompt = self._build_text_analysis_prompt(email_data, timezone)
+        text_messages = [
+            SystemMessage(
+                content=getattr(self, "classification_system_prompt", self.system_prompt)
+            ),
+            HumanMessage(content=text_prompt),
+        ]
+        stage_a = await self._invoke_structured_analysis(text_messages)
+        if not stage_a:
+            return None
+
+        finalized = self._finalize_analysis_result(stage_a, "llm_text")
+        if finalized.get("classification_complete"):
+            return finalized
+
+        if not allow_repair or not getattr(self, "enable_classification_repair", True):
+            return finalized
+
+        repair_prompt = self._build_classification_repair_prompt(
+            email_data, timezone, finalized
+        )
+        repair_messages = [
+            SystemMessage(
+                content=getattr(
+                    self,
+                    "classification_repair_system_prompt",
+                    self.system_prompt,
+                )
+            ),
+            HumanMessage(content=repair_prompt),
+        ]
+        repaired = await self._invoke_structured_analysis(repair_messages)
+        if not repaired:
+            return finalized
+        return self._finalize_analysis_result(repaired, "llm_text")
+
+    async def _run_tool_extraction_pass(
+        self,
+        email_data: Dict[str, Any],
+        timezone: str,
+        classification_result: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        if str(classification_result.get("is_spam", "")).upper() == Spam.SPAM.value:
+            return classification_result
+        if not getattr(self, "enable_tool_extraction", True):
+            return classification_result
+
+        tool_prompt = self._build_tool_extraction_prompt(
+            email_data, timezone, classification_result
+        )
+        tool_messages = [
+            SystemMessage(content=getattr(self, "tool_system_prompt", self.system_prompt)),
+            HumanMessage(content=tool_prompt),
+        ]
+        try:
+            tool_result = await self._invoke_structured_analysis(tool_messages)
+        except Exception as exc:
+            self.logger.warning("Tool extraction failed: %s", exc)
+            return classification_result
+
+        if not tool_result:
+            return classification_result
+
+        merged = dict(classification_result)
+        merged["required_tools"] = tool_result.get("required_tools", []) or []
+        for field in ("calendar_event", "reminder", "task"):
+            merged[field] = tool_result.get(field)
+
+        tool_reasoning = str(tool_result.get("reasoning") or "").strip()
+        if tool_reasoning:
+            merged["reasoning"] = tool_reasoning
+
+        return self._finalize_analysis_result(
+            merged,
+            str(classification_result.get("classification_source", "llm_text")),
+        )
+
     async def analyze_email(self, email_data: Dict[str, Any], timezone: str = "UTC") -> Optional[Dict[str, Any]]:
         """Analyze an email with text-first + multimodal + deterministic fallback."""
         await self.wait_for_rate_limit()
@@ -588,20 +754,21 @@ Always return valid values for is_spam, category, and priority.
             f"Analyzing email from {email_data.get('from', 'Unknown')} with subject: {email_data.get('subject', 'No subject')}"
         )
 
-        # Stage A: Text-only structured analysis.
-        text_prompt = self._build_text_analysis_prompt(email_data, timezone)
-        text_messages = [
-            SystemMessage(content=self.system_prompt),
-            HumanMessage(content=text_prompt),
-        ]
-        stage_a = await self._invoke_structured_analysis(text_messages)
-        if stage_a:
-            finalized_a = self._finalize_analysis_result(stage_a, "llm_text")
-            if finalized_a.get("classification_complete"):
-                return finalized_a
+        prefer_multimodal = self._should_use_multimodal_fallback(email_data)
+
+        # Stage A: Text classification, with one repair pass for incomplete results.
+        text_result = await self._run_text_classification_pass(
+            email_data,
+            timezone,
+            allow_repair=not prefer_multimodal,
+        )
+        if text_result and text_result.get("classification_complete"):
+            return await self._run_tool_extraction_pass(
+                email_data, timezone, text_result
+            )
 
         # Stage B: Multimodal structured analysis for weak body content.
-        if self._should_use_multimodal_fallback(email_data):
+        if prefer_multimodal:
             multimodal_content = self._build_multimodal_content(email_data, timezone)
             # Only run multimodal if we actually have binary blocks besides text.
             if len(multimodal_content) > 1:
@@ -614,6 +781,21 @@ Always return valid values for is_spam, category, and priority.
                     finalized_b = self._finalize_analysis_result(stage_b, "llm_multimodal")
                     if finalized_b.get("classification_complete"):
                         return finalized_b
+
+        if text_result and not text_result.get("classification_complete") and getattr(
+            self, "enable_classification_repair", True
+        ):
+            repaired_text_result = await self._run_text_classification_pass(
+                email_data,
+                timezone,
+                allow_repair=True,
+            )
+            if repaired_text_result and repaired_text_result.get("classification_complete"):
+                return await self._run_tool_extraction_pass(
+                    email_data,
+                    timezone,
+                    repaired_text_result,
+                )
 
         # Stage C: Deterministic fallback to guarantee category/priority.
         return self._apply_heuristic_fallback(
